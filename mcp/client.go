@@ -2,12 +2,15 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"google.golang.org/genai"
 )
 
 // Provider AI提供商类型
@@ -17,17 +20,19 @@ const (
 	ProviderDeepSeek Provider = "deepseek"
 	ProviderQwen     Provider = "qwen"
 	ProviderCustom   Provider = "custom"
+	ProviderGemini   Provider = "gemini"
 )
 
 // Client AI API配置
 type Client struct {
-	Provider   Provider
-	APIKey     string
-	SecretKey  string // 阿里云需要
-	BaseURL    string
-	Model      string
-	Timeout    time.Duration
-	UseFullURL bool // 是否使用完整URL（不添加/chat/completions）
+	Provider     Provider
+	APIKey       string
+	SecretKey    string // 阿里云需要
+	BaseURL      string
+	Model        string
+	Timeout      time.Duration
+	UseFullURL   bool          // 是否使用完整URL（不添加/chat/completions）
+	GeminiClient *genai.Client // Gemini客户端
 }
 
 func New() *Client {
@@ -76,6 +81,36 @@ func (cfg *Client) SetCustomAPI(apiURL, apiKey, modelName string) {
 	cfg.Timeout = 120 * time.Second
 }
 
+// SetGeminiAPIKey 设置Google Gemini API密钥
+func (cfg *Client) SetGeminiAPIKey(apiKey string) error {
+	fmt.Printf("gemini api key: %s\n", apiKey)
+	cfg.Provider = ProviderGemini
+	cfg.APIKey = apiKey
+	cfg.Model = "gemini-2.5-flash" // 默认使用最新的flash模型
+	cfg.Timeout = 120 * time.Second
+
+	// 创建Gemini客户端
+	ctx := context.Background()
+	clientConfig := &genai.ClientConfig{
+		APIKey: apiKey,
+	}
+
+	client, err := genai.NewClient(ctx, clientConfig)
+	if err != nil {
+		return fmt.Errorf("创建Gemini客户端失败: %w", err)
+	}
+	cfg.GeminiClient = client
+	return nil
+}
+
+// createHTTPClient 创建HTTP客户端，支持代理配置
+func (cfg *Client) createHTTPClient() *http.Client {
+	client := &http.Client{
+		Timeout: cfg.Timeout,
+	}
+	return client
+}
+
 // SetClient 设置完整的AI配置（高级用户）
 func (cfg *Client) SetClient(Client Client) {
 	if Client.Timeout == 0 {
@@ -87,7 +122,12 @@ func (cfg *Client) SetClient(Client Client) {
 // CallWithMessages 使用 system + user prompt 调用AI API（推荐）
 func (cfg *Client) CallWithMessages(systemPrompt, userPrompt string) (string, error) {
 	if cfg.APIKey == "" {
-		return "", fmt.Errorf("AI API密钥未设置，请先调用 SetDeepSeekAPIKey() 或 SetQwenAPIKey()")
+		return "", fmt.Errorf("AI API密钥未设置，请先调用相应的设置方法")
+	}
+
+	// Gemini使用不同的调用方式
+	if cfg.Provider == ProviderGemini {
+		return cfg.callGemini(systemPrompt, userPrompt, nil)
 	}
 
 	// 重试配置
@@ -122,6 +162,20 @@ func (cfg *Client) CallWithMessages(systemPrompt, userPrompt string) (string, er
 	}
 
 	return "", fmt.Errorf("重试%d次后仍然失败: %w", maxRetries, lastErr)
+}
+
+// CallWithMessagesImage 使用 system + user prompt + image 调用AI API（支持图像）
+func (cfg *Client) CallWithMessagesImage(systemPrompt, userPrompt string, imageData []byte) (string, error) {
+	if cfg.APIKey == "" {
+		return "", fmt.Errorf("AI API密钥未设置，请先调用相应的设置方法")
+	}
+
+	// 目前只有Gemini支持图像输入
+	if cfg.Provider != ProviderGemini {
+		return "", fmt.Errorf("图像输入目前只支持Gemini提供商")
+	}
+
+	return cfg.callGemini(systemPrompt, userPrompt, imageData)
 }
 
 // callOnce 单次调用AI API（内部使用）
@@ -188,7 +242,7 @@ func (cfg *Client) callOnce(systemPrompt, userPrompt string) (string, error) {
 	}
 
 	// 发送请求
-	client := &http.Client{Timeout: cfg.Timeout}
+	client := cfg.createHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("发送请求失败: %w", err)
@@ -243,4 +297,67 @@ func isRetryableError(err error) bool {
 		}
 	}
 	return false
+}
+
+// callGemini 调用Gemini API（内部使用）
+func (cfg *Client) callGemini(systemPrompt, userPrompt string, imageData []byte) (string, error) {
+	if cfg.GeminiClient == nil {
+		return "", fmt.Errorf("Gemini客户端未初始化")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+	defer cancel()
+
+	// 构建输入内容
+	var parts []*genai.Part
+
+	// 添加system prompt（如果有）
+	if systemPrompt != "" {
+		parts = append(parts, genai.NewPartFromText(systemPrompt+"\n\n"))
+	}
+
+	// 添加用户文本
+	parts = append(parts, genai.NewPartFromText(userPrompt))
+
+	// 添加图像（如果有）
+	if imageData != nil {
+		parts = append(parts, genai.NewPartFromBytes(imageData, "image/jpeg"))
+	}
+
+	// 构建内容
+	content := genai.NewContentFromParts(parts, genai.RoleUser)
+
+	// 调用Gemini API
+	result, err := cfg.GeminiClient.Models.GenerateContent(
+		ctx,
+		cfg.Model,
+		[]*genai.Content{content},
+		&genai.GenerateContentConfig{},
+	)
+	if err != nil {
+		return "", fmt.Errorf("gemini API调用失败: %w", err)
+	}
+
+	// 提取响应文本
+	if result == nil || len(result.Candidates) == 0 {
+		return "", fmt.Errorf("Gemini返回空响应")
+	}
+
+	candidate := result.Candidates[0]
+	if candidate.Content == nil || len(candidate.Content.Parts) == 0 {
+		return "", fmt.Errorf("Gemini返回空内容")
+	}
+
+	// 提取文本内容
+	var responseText strings.Builder
+	for _, part := range candidate.Content.Parts {
+		// 根据实际的Part结构提取文本
+		responseText.WriteString(fmt.Sprintf("%v", part))
+	}
+
+	if responseText.Len() == 0 {
+		return "", fmt.Errorf("Gemini响应中没有文本内容")
+	}
+
+	return responseText.String(), nil
 }

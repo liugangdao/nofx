@@ -20,6 +20,9 @@ type AutoTraderConfig struct {
 	Name    string // Trader显示名称
 	AIModel string // AI模型: "qwen" 或 "deepseek"
 
+	// 截图功能配置（仅Gemini支持）
+	EnableScreenshot bool // 是否启用图表截图功能
+
 	// 交易平台选择
 	Exchange string // "binance", "hyperliquid" 或 "aster"
 
@@ -43,6 +46,7 @@ type AutoTraderConfig struct {
 	UseQwen     bool
 	DeepSeekKey string
 	QwenKey     string
+	GeminiKey   string
 
 	// 自定义AI API配置
 	CustomAPIURL    string
@@ -50,7 +54,8 @@ type AutoTraderConfig struct {
 	CustomModelName string
 
 	// 扫描配置
-	ScanInterval time.Duration // 扫描间隔（建议3分钟）
+	ScanInterval        time.Duration // 扫描间隔（建议3分钟）
+	ScanIntervalMinutes int           // 扫描间隔分钟数
 
 	// 账户配置
 	InitialBalance float64 // 初始金额（用于计算盈亏，需手动设置）
@@ -67,22 +72,24 @@ type AutoTraderConfig struct {
 
 // AutoTrader 自动交易器
 type AutoTrader struct {
-	id                    string // Trader唯一标识
-	name                  string // Trader显示名称
-	aiModel               string // AI模型名称
-	exchange              string // 交易平台名称
-	config                AutoTraderConfig
-	trader                Trader // 使用Trader接口（支持多平台）
-	mcpClient             *mcp.Client
-	decisionLogger        *logger.DecisionLogger // 决策日志记录器
-	initialBalance        float64
-	dailyPnL              float64
-	lastResetTime         time.Time
-	stopUntil             time.Time
-	isRunning             bool
-	startTime             time.Time        // 系统启动时间
-	callCount             int              // AI调用次数
-	positionFirstSeenTime map[string]int64 // 持仓首次出现时间 (symbol_side -> timestamp毫秒)
+	id                             string // Trader唯一标识
+	name                           string // Trader显示名称
+	aiModel                        string // AI模型名称
+	exchange                       string // 交易平台名称
+	enableScreenshot               bool   // 是否启用截图功能
+	config                         AutoTraderConfig
+	trader                         Trader // 使用Trader接口（支持多平台）
+	mcpClient                      *mcp.Client
+	decisionLogger                 *logger.DecisionLogger // 决策日志记录器
+	initialBalance                 float64
+	dailyPnL                       float64
+	lastResetTime                  time.Time
+	stopUntil                      time.Time
+	isRunning                      bool
+	startTime                      time.Time         // 系统启动时间
+	callCount                      int               // AI调用次数
+	positionFirstSeenTime          map[string]int64  // 持仓首次出现时间 (symbol_side -> timestamp毫秒)
+	positionInvalidationConditions map[string]string // 持仓离场条件 (symbol -> invalidation_condition)
 }
 
 // NewAutoTrader 创建自动交易器
@@ -109,6 +116,15 @@ func NewAutoTrader(config AutoTraderConfig) (*AutoTrader, error) {
 		// 使用自定义API
 		mcpClient.SetCustomAPI(config.CustomAPIURL, config.CustomAPIKey, config.CustomModelName)
 		log.Printf("🤖 [%s] 使用自定义AI API: %s (模型: %s)", config.Name, config.CustomAPIURL, config.CustomModelName)
+	} else if config.AIModel == "gemini" {
+		// 使用Gemini
+		if err := mcpClient.SetGeminiAPIKey(config.GeminiKey); err != nil {
+			return nil, fmt.Errorf("初始化Gemini API失败: %w", err)
+		}
+		log.Printf("🤖 [%s] 使用Google Gemini AI", config.Name)
+		if config.EnableScreenshot {
+			log.Printf("📊 [%s] 启用图表截图功能", config.Name)
+		}
 	} else if config.UseQwen || config.AIModel == "qwen" {
 		// 使用Qwen
 		mcpClient.SetQwenAPIKey(config.QwenKey, "")
@@ -163,20 +179,22 @@ func NewAutoTrader(config AutoTraderConfig) (*AutoTrader, error) {
 	decisionLogger := logger.NewDecisionLogger(logDir)
 
 	return &AutoTrader{
-		id:                    config.ID,
-		name:                  config.Name,
-		aiModel:               config.AIModel,
-		exchange:              config.Exchange,
-		config:                config,
-		trader:                trader,
-		mcpClient:             mcpClient,
-		decisionLogger:        decisionLogger,
-		initialBalance:        config.InitialBalance,
-		lastResetTime:         time.Now(),
-		startTime:             time.Now(),
-		callCount:             0,
-		isRunning:             false,
-		positionFirstSeenTime: make(map[string]int64),
+		id:                             config.ID,
+		name:                           config.Name,
+		aiModel:                        config.AIModel,
+		exchange:                       config.Exchange,
+		enableScreenshot:               config.EnableScreenshot,
+		config:                         config,
+		trader:                         trader,
+		mcpClient:                      mcpClient,
+		decisionLogger:                 decisionLogger,
+		initialBalance:                 config.InitialBalance,
+		lastResetTime:                  time.Now(),
+		startTime:                      time.Now(),
+		callCount:                      0,
+		isRunning:                      false,
+		positionFirstSeenTime:          make(map[string]int64),
+		positionInvalidationConditions: make(map[string]string),
 	}, nil
 }
 
@@ -287,7 +305,7 @@ func (at *AutoTrader) runCycle() error {
 
 	// 4. 调用AI获取完整决策
 	log.Println("🤖 正在请求AI分析并决策...")
-	decision, err := decision.GetFullDecision(ctx, at.mcpClient)
+	decision, err := decision.GetFullDecision(ctx, at.mcpClient, at.enableScreenshot)
 
 	// 即使有错误，也保存思维链、决策和输入prompt（用于debug）
 	if decision != nil {
@@ -452,18 +470,22 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 		}
 		updateTime := at.positionFirstSeenTime[posKey]
 
+		// 获取离场条件（使用symbol作为key，同一币种共享离场条件）
+		invalidationCondition := at.positionInvalidationConditions[symbol]
+
 		positionInfos = append(positionInfos, decision.PositionInfo{
-			Symbol:           symbol,
-			Side:             side,
-			EntryPrice:       entryPrice,
-			MarkPrice:        markPrice,
-			Quantity:         quantity,
-			Leverage:         leverage,
-			UnrealizedPnL:    unrealizedPnl,
-			UnrealizedPnLPct: pnlPct,
-			LiquidationPrice: liquidationPrice,
-			MarginUsed:       marginUsed,
-			UpdateTime:       updateTime,
+			Symbol:                symbol,
+			Side:                  side,
+			EntryPrice:            entryPrice,
+			MarkPrice:             markPrice,
+			Quantity:              quantity,
+			Leverage:              leverage,
+			UnrealizedPnL:         unrealizedPnl,
+			UnrealizedPnLPct:      pnlPct,
+			LiquidationPrice:      liquidationPrice,
+			MarginUsed:            marginUsed,
+			UpdateTime:            updateTime,
+			InvalidationCondition: invalidationCondition,
 		})
 	}
 
@@ -471,6 +493,18 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 	for key := range at.positionFirstSeenTime {
 		if !currentPositionKeys[key] {
 			delete(at.positionFirstSeenTime, key)
+		}
+	}
+
+	// 清理已完全平仓币种的离场条件
+	currentSymbols := make(map[string]bool)
+	for _, pos := range positions {
+		symbol := pos["symbol"].(string)
+		currentSymbols[symbol] = true
+	}
+	for symbol := range at.positionInvalidationConditions {
+		if !currentSymbols[symbol] {
+			delete(at.positionInvalidationConditions, symbol)
 		}
 	}
 
@@ -521,11 +555,12 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 
 	// 6. 构建上下文
 	ctx := &decision.Context{
-		CurrentTime:     time.Now().Format("2006-01-02 15:04:05"),
-		RuntimeMinutes:  int(time.Since(at.startTime).Minutes()),
-		CallCount:       at.callCount,
-		BTCETHLeverage:  at.config.BTCETHLeverage,  // 使用配置的杠杆倍数
-		AltcoinLeverage: at.config.AltcoinLeverage, // 使用配置的杠杆倍数
+		CurrentTime:         time.Now().Format("2006-01-02 15:04:05"),
+		RuntimeMinutes:      int(time.Since(at.startTime).Minutes()),
+		CallCount:           at.callCount,
+		BTCETHLeverage:      at.config.BTCETHLeverage,      // 使用配置的杠杆倍数
+		AltcoinLeverage:     at.config.AltcoinLeverage,     // 使用配置的杠杆倍数
+		ScanIntervalMinutes: at.config.ScanIntervalMinutes, // 使用配置的扫描间隔
 		Account: decision.AccountInfo{
 			TotalEquity:      totalEquity,
 			AvailableBalance: availableBalance,
@@ -577,7 +612,7 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 	}
 
 	// 获取当前价格
-	marketData, err := market.Get(decision.Symbol)
+	marketData, err := market.Get(decision.Symbol, 3)
 	if err != nil {
 		return err
 	}
@@ -600,9 +635,12 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 
 	log.Printf("  ✓ 开仓成功，订单ID: %v, 数量: %.4f", order["orderId"], quantity)
 
-	// 记录开仓时间
+	// 记录开仓时间和离场条件
 	posKey := decision.Symbol + "_long"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
+
+	// 设置该币种的离场条件（开仓时清空旧条件，设置新条件）
+	at.positionInvalidationConditions[decision.Symbol] = decision.InvalidationCondition
 
 	// 设置止损止盈
 	if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, decision.StopLoss); err != nil {
@@ -630,7 +668,7 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 	}
 
 	// 获取当前价格
-	marketData, err := market.Get(decision.Symbol)
+	marketData, err := market.Get(decision.Symbol, 3)
 	if err != nil {
 		return err
 	}
@@ -653,9 +691,12 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 
 	log.Printf("  ✓ 开仓成功，订单ID: %v, 数量: %.4f", order["orderId"], quantity)
 
-	// 记录开仓时间
+	// 记录开仓时间和离场条件
 	posKey := decision.Symbol + "_short"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
+
+	// 设置该币种的离场条件（开仓时清空旧条件，设置新条件）
+	at.positionInvalidationConditions[decision.Symbol] = decision.InvalidationCondition
 
 	// 设置止损止盈
 	if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, decision.StopLoss); err != nil {
@@ -673,7 +714,7 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *decision.Decision, ac
 	log.Printf("  🔄 平多仓: %s", decision.Symbol)
 
 	// 获取当前价格
-	marketData, err := market.Get(decision.Symbol)
+	marketData, err := market.Get(decision.Symbol, 3)
 	if err != nil {
 		return err
 	}
@@ -699,7 +740,7 @@ func (at *AutoTrader) executeCloseShortWithRecord(decision *decision.Decision, a
 	log.Printf("  🔄 平空仓: %s", decision.Symbol)
 
 	// 获取当前价格
-	marketData, err := market.Get(decision.Symbol)
+	marketData, err := market.Get(decision.Symbol, 3)
 	if err != nil {
 		return err
 	}

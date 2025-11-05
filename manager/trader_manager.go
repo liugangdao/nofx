@@ -49,10 +49,13 @@ func (tm *TraderManager) AddTrader(cfg config.TraderConfig, coinPoolURL string, 
 		UseQwen:               cfg.AIModel == "qwen",
 		DeepSeekKey:           cfg.DeepSeekKey,
 		QwenKey:               cfg.QwenKey,
+		GeminiKey:             cfg.GeminiKey,
+		EnableScreenshot:      cfg.EnableScreenshot,
 		CustomAPIURL:          cfg.CustomAPIURL,
 		CustomAPIKey:          cfg.CustomAPIKey,
 		CustomModelName:       cfg.CustomModelName,
 		ScanInterval:          cfg.GetScanInterval(),
+		ScanIntervalMinutes:   cfg.ScanIntervalMinutes,
 		InitialBalance:        cfg.InitialBalance,
 		BTCETHLeverage:        leverage.BTCETHLeverage,  // 使用配置的杠杆倍数
 		AltcoinLeverage:       leverage.AltcoinLeverage, // 使用配置的杠杆倍数

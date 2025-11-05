@@ -12,17 +12,18 @@ import (
 
 // Data 市场数据结构
 type Data struct {
-	Symbol            string
-	CurrentPrice      float64
-	PriceChange1h     float64 // 1小时价格变化百分比
-	PriceChange4h     float64 // 4小时价格变化百分比
-	CurrentEMA20      float64
-	CurrentMACD       float64
-	CurrentRSI7       float64
-	OpenInterest      *OIData
-	FundingRate       float64
-	IntradaySeries    *IntradayData
-	LongerTermContext *LongerTermData
+	Symbol              string
+	CurrentPrice        float64
+	PriceChange1h       float64 // 1小时价格变化百分比
+	PriceChange4h       float64 // 4小时价格变化百分比
+	CurrentEMA20        float64
+	CurrentMACD         float64
+	CurrentRSI7         float64
+	OpenInterest        *OIData
+	FundingRate         float64
+	IntradaySeries      *IntradayData
+	LongerTermContext   *LongerTermData
+	ScanIntervalMinutes int // 扫描间隔分钟数
 }
 
 // OIData Open Interest数据
@@ -64,12 +65,30 @@ type Kline struct {
 }
 
 // Get 获取指定代币的市场数据
-func Get(symbol string) (*Data, error) {
+func Get(symbol string, interval int) (*Data, error) {
 	// 标准化symbol
 	symbol = Normalize(symbol)
 
+	// interval 数字转化为 '3m', '1h' 格式,
+	var intervalStr string
+	if interval < 60 {
+		intervalStr = strconv.Itoa(interval) + "m"
+	} else if interval == 60 {
+		intervalStr = "1h"
+	} else if interval == 120 {
+		intervalStr = "2h"
+	} else if interval == 240 {
+		intervalStr = "4h"
+	} else if interval == 480 {
+		intervalStr = "8h"
+	} else if interval == 1440 {
+		intervalStr = "1d"
+	} else {
+		return nil, fmt.Errorf("不支持的间隔: %d", interval)
+	}
+
 	// 获取3分钟K线数据 (最近10个)
-	klines3m, err := getKlines(symbol, "3m", 40) // 多获取一些用于计算
+	klines3m, err := getKlines(symbol, intervalStr, 40) // 多获取一些用于计算
 	if err != nil {
 		return nil, fmt.Errorf("获取3分钟K线失败: %v", err)
 	}
@@ -122,17 +141,18 @@ func Get(symbol string) (*Data, error) {
 	longerTermData := calculateLongerTermData(klines4h)
 
 	return &Data{
-		Symbol:            symbol,
-		CurrentPrice:      currentPrice,
-		PriceChange1h:     priceChange1h,
-		PriceChange4h:     priceChange4h,
-		CurrentEMA20:      currentEMA20,
-		CurrentMACD:       currentMACD,
-		CurrentRSI7:       currentRSI7,
-		OpenInterest:      oiData,
-		FundingRate:       fundingRate,
-		IntradaySeries:    intradayData,
-		LongerTermContext: longerTermData,
+		Symbol:              symbol,
+		CurrentPrice:        currentPrice,
+		PriceChange1h:       priceChange1h,
+		PriceChange4h:       priceChange4h,
+		CurrentEMA20:        currentEMA20,
+		CurrentMACD:         currentMACD,
+		CurrentRSI7:         currentRSI7,
+		OpenInterest:        oiData,
+		FundingRate:         fundingRate,
+		IntradaySeries:      intradayData,
+		LongerTermContext:   longerTermData,
+		ScanIntervalMinutes: interval,
 	}, nil
 }
 
@@ -470,7 +490,7 @@ func Format(data *Data) string {
 	sb.WriteString(fmt.Sprintf("Funding Rate: %.2e\n\n", data.FundingRate))
 
 	if data.IntradaySeries != nil {
-		sb.WriteString("Intraday series (3‑minute intervals, oldest → latest):\n\n")
+		sb.WriteString(fmt.Sprintf("Intraday series ( %d minute intervals, oldest → latest):\n\n", data.ScanIntervalMinutes))
 
 		if len(data.IntradaySeries.MidPrices) > 0 {
 			sb.WriteString(fmt.Sprintf("Mid prices: %s\n\n", formatFloatSlice(data.IntradaySeries.MidPrices)))

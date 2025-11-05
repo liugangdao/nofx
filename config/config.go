@@ -11,8 +11,11 @@ import (
 type TraderConfig struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
-	Enabled bool   `json:"enabled"` // 是否启用该trader
-	AIModel string `json:"ai_model"` // "qwen" or "deepseek"
+	Enabled bool   `json:"enabled"`  // 是否启用该trader
+	AIModel string `json:"ai_model"` // "qwen", "deepseek", "gemini", or "custom"
+
+	// 截图功能配置（仅Gemini支持）
+	EnableScreenshot bool `json:"enable_screenshot,omitempty"` // 是否启用图表截图功能
 
 	// 交易平台选择（二选一）
 	Exchange string `json:"exchange"` // "binance" or "hyperliquid"
@@ -34,6 +37,7 @@ type TraderConfig struct {
 	// AI配置
 	QwenKey     string `json:"qwen_key,omitempty"`
 	DeepSeekKey string `json:"deepseek_key,omitempty"`
+	GeminiKey   string `json:"gemini_key,omitempty"`
 
 	// 自定义AI API配置（支持任何OpenAI格式的API）
 	CustomAPIURL    string `json:"custom_api_url,omitempty"`
@@ -122,8 +126,8 @@ func (c *Config) Validate() error {
 		if trader.Name == "" {
 			return fmt.Errorf("trader[%d]: Name不能为空", i)
 		}
-		if trader.AIModel != "qwen" && trader.AIModel != "deepseek" && trader.AIModel != "custom" {
-			return fmt.Errorf("trader[%d]: ai_model必须是 'qwen', 'deepseek' 或 'custom'", i)
+		if trader.AIModel != "qwen" && trader.AIModel != "deepseek" && trader.AIModel != "gemini" && trader.AIModel != "custom" {
+			return fmt.Errorf("trader[%d]: ai_model必须是 'qwen', 'deepseek', 'gemini' 或 'custom'", i)
 		}
 
 		// 验证交易平台配置
@@ -154,6 +158,9 @@ func (c *Config) Validate() error {
 		}
 		if trader.AIModel == "deepseek" && trader.DeepSeekKey == "" {
 			return fmt.Errorf("trader[%d]: 使用DeepSeek时必须配置deepseek_key", i)
+		}
+		if trader.AIModel == "gemini" && trader.GeminiKey == "" {
+			return fmt.Errorf("trader[%d]: 使用Gemini时必须配置gemini_key", i)
 		}
 		if trader.AIModel == "custom" {
 			if trader.CustomAPIURL == "" {
