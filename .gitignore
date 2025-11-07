@@ -40,3 +40,4 @@ web/.vite/
 
 output/
 debug_screenshots/
+cmd/

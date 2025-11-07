@@ -27,6 +27,11 @@ type PositionInfo struct {
 	MarginUsed            float64 `json:"margin_used"`
 	UpdateTime            int64   `json:"update_time"`                      // 持仓更新时间戳（毫秒）
 	InvalidationCondition string  `json:"invalidation_condition,omitempty"` // 开仓时设定的离场条件
+	Reasoning             string  `json:"reasoning,omitempty"`              // 开仓理由
+	MaxProfitPct          float64 `json:"max_profit_pct"`                   // 最大盈利百分比
+	MaxLossPct            float64 `json:"max_loss_pct"`                     // 最大亏损百分比
+	DrawdownFromPeakPct   float64 `json:"drawdown_from_peak_pct"`           // 从峰值回撤百分比
+
 }
 
 // AccountInfo 账户信息
@@ -260,13 +265,13 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 
 	// === 硬约束（风险控制）===
 	sb.WriteString("# ⚖️ 硬约束（风险控制）\n\n")
-	sb.WriteString("1. **风险回报比**: 必须 ≥ 1:3（冒1%风险，赚3%+收益）\n")
+	sb.WriteString("1. **风险回报比**: 必须 ≥ 1:3（冒1%风险，赚3%+收益），开仓时合理设置止盈位和止损位（重要）\n")
 	sb.WriteString("2. **最多持仓**: 3个币种（质量>数量）\n")
 	sb.WriteString(fmt.Sprintf("3. **单币仓位**: 山寨%.0f-%.0f U(%dx杠杆) | BTC/ETH %.0f-%.0f U(%dx杠杆)\n",
 		accountEquity*0.8, accountEquity*1.5, altcoinLeverage, accountEquity*5, accountEquity*10, btcEthLeverage))
 	sb.WriteString("4. **保证金**: 总使用率 ≤ 90%\n")
 	sb.WriteString("5. **离场条件(invalidation_condition)**: 开仓时设置新条件（自动清空旧条件），hold时沿用当前持仓条件\n")
-	sb.WriteString("6. **盘整期间减少交易频率，最好不交易**\n\n")
+	sb.WriteString("6. **盘整期间最好不交易（重要）**\n\n")
 
 	// === 做空激励 ===
 	sb.WriteString("# 📉 做多做空平衡\n\n")
@@ -314,7 +319,10 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	// === 决策流程 ===
 	sb.WriteString("# 📋 决策流程\n\n")
 	sb.WriteString("1. **分析夏普比率**: 当前策略是否有效？需要调整吗？\n")
-	sb.WriteString("2. **评估持仓**: 到达离场条件才离场, 否则一直持有(重要)\n")
+	sb.WriteString("2. **评估持仓**: \n")
+	sb.WriteString("   - 检查是否到达离场条件\n")
+	sb.WriteString("   - **回撤止盈**: 如果当前盈利已经达到好的期望值且峰值回撤较大，考虑止盈\n")
+	sb.WriteString("   - 未到离场条件且回撤可控，继续持有\n")
 	sb.WriteString("3. **寻找新机会**: 有强信号吗？多空机会？盘整期间不开仓，反弹不开仓，在强信号下顺势交易\n")
 	sb.WriteString("4. **输出决策**: 思维链分析 + JSON\n\n")
 
@@ -324,7 +332,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("简洁分析你的思考过程\n\n")
 	sb.WriteString("**第二步: JSON决策数组**\n\n")
 	sb.WriteString("```json\n[\n")
-	sb.WriteString(fmt.Sprintf("  {\"symbol\": \"BTCUSDT\", \"action\": \"open_short\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 97000, \"take_profit\": 91000, \"confidence\": 85, \"risk_usd\": 300, \"reasoning\": \"下跌趋势+MACD死叉\", \"invalidation_condition\": \"4h close above 98000 (trend reversal)\"},\n", btcEthLeverage, accountEquity*5))
+	sb.WriteString(fmt.Sprintf("  {\"symbol\": \"BTCUSDT\", \"action\": \"open_short\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 97000, \"take_profit\": 91000, \"confidence\": 85, \"risk_usd\": 300, \"reasoning\": \"下跌趋势+MACD死叉\", \"opening_reason\": \"BTC突破关键支撑位，MACD死叉确认下跌趋势，成交量放大验证卖压\", \"invalidation_condition\": \"4h close above 98000 (trend reversal)\"},\n", btcEthLeverage, accountEquity*5))
 	sb.WriteString("  {\"symbol\": \"ETHUSDT\", \"action\": \"close_long\", \"reasoning\": \"止盈离场\", \"invalidation_condition\": \"4h close above 98000 (trend reversal)\"}\n")
 	sb.WriteString("]\n```\n\n")
 	sb.WriteString("**字段说明**:\n")
@@ -361,20 +369,20 @@ func buildSystemPromptImage(accountEquity float64, btcEthLeverage, altcoinLevera
 
 	// === 硬约束（风险控制）===
 	sb.WriteString("# ⚖️ 硬约束（风险控制）\n\n")
-	sb.WriteString("1. **风险回报比**: 必须 ≥ 1:3（冒1%风险，赚3%+收益）\n")
+	sb.WriteString("1. **风险回报比**: 必须 ≥ 1:3（冒1%风险，赚3%+收益），开仓时合理设置止盈位和止损位（重要）\n")
 	sb.WriteString("2. **最多持仓**: 3个币种（质量>数量）\n")
 	sb.WriteString(fmt.Sprintf("3. **单币仓位**: 山寨%.0f-%.0f U(%dx杠杆) | BTC/ETH %.0f-%.0f U(%dx杠杆)\n",
 		accountEquity*0.8, accountEquity*1.5, altcoinLeverage, accountEquity*5, accountEquity*10, btcEthLeverage))
-	sb.WriteString("4. **保证金**: 总使用率 ≤ 90%\n")
+	sb.WriteString("4. **保证金**: 总使用率 ≤ 80%\n")
 	sb.WriteString("5. **离场条件(invalidation_condition)**: 开仓时设置新条件（自动清空旧条件），hold时沿用当前持仓条件\n")
-	sb.WriteString("6. **盘整期间减少交易频率**(重要)\n\n")
+	sb.WriteString("6. **盘整期间最好不交易（重要）**\n\n")
 
 	// === 做空激励 ===
 	sb.WriteString("# 📉 做多做空平衡\n\n")
 	sb.WriteString("**重要**: 下跌趋势做空的利润 = 上涨趋势做多的利润\n\n")
 	sb.WriteString("- 上涨趋势 → 做多\n")
 	sb.WriteString("- 下跌趋势 → 做空\n")
-	sb.WriteString("- 震荡市场 → 观望\n\n")
+	sb.WriteString("- 震荡市场 → 观望，不交易（重要）\n\n")
 
 	// === 交易频率认知 ===
 	sb.WriteString("# ⏱️ 交易频率认知\n 每天一到两笔交易\n")
@@ -416,7 +424,10 @@ func buildSystemPromptImage(accountEquity float64, btcEthLeverage, altcoinLevera
 	// === 决策流程 ===
 	sb.WriteString("# 📋 决策流程\n\n")
 	sb.WriteString("1. **分析夏普比率**: 当前策略是否有效？需要调整吗？\n")
-	sb.WriteString("2. **评估持仓**: 到达离场条件才离场, 否则一直持有(重要)\n")
+	sb.WriteString("2. **评估持仓**: \n")
+	sb.WriteString("   - 检查是否到达离场条件\n")
+	sb.WriteString("   - **回撤止盈**: 如果当前盈利已经达到好的期望值且峰值回撤较大，考虑止盈\n")
+	sb.WriteString("   - 未到离场条件且回撤可控，继续持有\n")
 	sb.WriteString("3. **评估开仓**: 有强信号吗？多空机会？盘整期间不开仓，反弹不开仓，在强信号下顺势交易\n")
 	sb.WriteString("4. **输出决策**: 思维链分析 + JSON\n\n")
 
@@ -432,7 +443,7 @@ func buildSystemPromptImage(accountEquity float64, btcEthLeverage, altcoinLevera
 	sb.WriteString("**字段说明**:\n")
 	sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
 	sb.WriteString("- `confidence`: 0-100（开仓建议≥75）\n")
-	sb.WriteString("- `invalidation_condition`: 离场条件，描述什么情况下应该平仓（如技术位破位、趋势反转等）\n")
+	sb.WriteString("- hold 时必填： `invalidation_condition`: hold继续沿用当前持仓的离场条件（不要修改）\n")
 	sb.WriteString("- 开仓时必填: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd, reasoning, invalidation_condition\n\n")
 
 	// === 关键提醒 ===
@@ -493,9 +504,18 @@ func buildUserPrompt(ctx *Context) string {
 				pos.EntryPrice, pos.MarkPrice, pos.UnrealizedPnLPct,
 				pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration))
 
+			// 显示PnL统计信息
+			sb.WriteString(fmt.Sprintf("**盈亏统计**: 最高盈利%+.2f%% | 现在盈亏%+.2f%% | 峰值回撤%+.2f%%\n",
+				pos.MaxProfitPct, pos.UnrealizedPnLPct, pos.DrawdownFromPeakPct))
+
+			// 显示开仓理由（如果有）
+			if pos.Reasoning != "" {
+				sb.WriteString(fmt.Sprintf("**开仓理由**: %s\n", pos.Reasoning))
+			}
+
 			// 显示离场条件（如果有）
 			if pos.InvalidationCondition != "" {
-				sb.WriteString(fmt.Sprintf("   📋 **离场条件**: %s\n", pos.InvalidationCondition))
+				sb.WriteString(fmt.Sprintf("**离场条件**: %s\n", pos.InvalidationCondition))
 			}
 			sb.WriteString("\n")
 

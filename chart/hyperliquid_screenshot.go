@@ -54,7 +54,7 @@ func ScreenshotHyperliquidChart(symbol string) ([]byte, error) {
 		chromedp.Navigate(url),
 
 		// 等待页面完全加载（给足够的时间让图表渲染）
-		chromedp.Sleep(5*time.Second),
+		chromedp.Sleep(8*time.Second),
 
 		// 对图表容器进行截图
 		chromedp.Screenshot("div[id='tv_chart_container']", &buf, chromedp.ByQuery),

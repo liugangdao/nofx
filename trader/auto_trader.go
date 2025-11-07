@@ -86,10 +86,18 @@ type AutoTrader struct {
 	lastResetTime                  time.Time
 	stopUntil                      time.Time
 	isRunning                      bool
-	startTime                      time.Time         // 系统启动时间
-	callCount                      int               // AI调用次数
-	positionFirstSeenTime          map[string]int64  // 持仓首次出现时间 (symbol_side -> timestamp毫秒)
-	positionInvalidationConditions map[string]string // 持仓离场条件 (symbol -> invalidation_condition)
+	startTime                      time.Time               // 系统启动时间
+	callCount                      int                     // AI调用次数
+	positionFirstSeenTime          map[string]int64        // 持仓首次出现时间 (symbol_side -> timestamp毫秒)
+	positionInvalidationConditions map[string]string       // 持仓离场条件 (symbol -> invalidation_condition)
+	positionReasonings             map[string]string       // 持仓开仓理由 (symbol -> opening_reason)
+	positionPnLTracking            map[string]*PnLTracking // 持仓盈亏跟踪 (symbol_side -> PnL tracking)
+}
+
+// PnLTracking 持仓盈亏跟踪数据
+type PnLTracking struct {
+	MaxProfitPct float64 // 最大盈利百分比
+	MaxLossPct   float64 // 最大亏损百分比（负数）
 }
 
 // NewAutoTrader 创建自动交易器
@@ -195,6 +203,8 @@ func NewAutoTrader(config AutoTraderConfig) (*AutoTrader, error) {
 		isRunning:                      false,
 		positionFirstSeenTime:          make(map[string]int64),
 		positionInvalidationConditions: make(map[string]string),
+		positionReasonings:             make(map[string]string),
+		positionPnLTracking:            make(map[string]*PnLTracking),
 	}, nil
 }
 
@@ -473,6 +483,33 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 		// 获取离场条件（使用symbol作为key，同一币种共享离场条件）
 		invalidationCondition := at.positionInvalidationConditions[symbol]
 
+		// 跟踪盈亏统计（最大盈利、最大亏损、回撤）
+		if _, exists := at.positionPnLTracking[posKey]; !exists {
+			at.positionPnLTracking[posKey] = &PnLTracking{
+				MaxProfitPct: pnlPct,
+				MaxLossPct:   pnlPct,
+			}
+		}
+		tracking := at.positionPnLTracking[posKey]
+
+		// 更新最大盈利和最大亏损
+		if pnlPct > tracking.MaxProfitPct {
+			tracking.MaxProfitPct = pnlPct
+		}
+		if pnlPct < tracking.MaxLossPct {
+			tracking.MaxLossPct = pnlPct
+		}
+
+		// 计算从峰值的回撤百分比
+		drawdownFromPeakPct := 0.0
+		if tracking.MaxProfitPct > 0 {
+			// 从峰值回撤 = (峰值盈利 - 当前盈利) / 峰值盈利 * 100
+			drawdownFromPeakPct = (tracking.MaxProfitPct - pnlPct) / tracking.MaxProfitPct * 100
+		}
+
+		// 获取开仓理由（使用symbol作为key）
+		openingReason := at.positionReasonings[symbol]
+
 		positionInfos = append(positionInfos, decision.PositionInfo{
 			Symbol:                symbol,
 			Side:                  side,
@@ -486,6 +523,10 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 			MarginUsed:            marginUsed,
 			UpdateTime:            updateTime,
 			InvalidationCondition: invalidationCondition,
+			Reasoning:             openingReason,
+			MaxProfitPct:          tracking.MaxProfitPct,
+			MaxLossPct:            tracking.MaxLossPct,
+			DrawdownFromPeakPct:   drawdownFromPeakPct,
 		})
 	}
 
@@ -493,10 +534,11 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 	for key := range at.positionFirstSeenTime {
 		if !currentPositionKeys[key] {
 			delete(at.positionFirstSeenTime, key)
+			delete(at.positionPnLTracking, key) // 同时清理PnL跟踪数据
 		}
 	}
 
-	// 清理已完全平仓币种的离场条件
+	// 清理已完全平仓币种的离场条件和开仓理由
 	currentSymbols := make(map[string]bool)
 	for _, pos := range positions {
 		symbol := pos["symbol"].(string)
@@ -505,6 +547,11 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 	for symbol := range at.positionInvalidationConditions {
 		if !currentSymbols[symbol] {
 			delete(at.positionInvalidationConditions, symbol)
+		}
+	}
+	for symbol := range at.positionReasonings {
+		if !currentSymbols[symbol] {
+			delete(at.positionReasonings, symbol)
 		}
 	}
 
@@ -639,8 +686,9 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 	posKey := decision.Symbol + "_long"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
-	// 设置该币种的离场条件（开仓时清空旧条件，设置新条件）
+	// 设置该币种的离场条件和开仓理由（开仓时清空旧条件，设置新条件）
 	at.positionInvalidationConditions[decision.Symbol] = decision.InvalidationCondition
+	at.positionReasonings[decision.Symbol] = decision.Reasoning
 
 	// 设置止损止盈
 	if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, decision.StopLoss); err != nil {
@@ -695,8 +743,9 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 	posKey := decision.Symbol + "_short"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
-	// 设置该币种的离场条件（开仓时清空旧条件，设置新条件）
+	// 设置该币种的离场条件和开仓理由（开仓时清空旧条件，设置新条件）
 	at.positionInvalidationConditions[decision.Symbol] = decision.InvalidationCondition
+	at.positionReasonings[decision.Symbol] = decision.Reasoning
 
 	// 设置止损止盈
 	if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, decision.StopLoss); err != nil {
