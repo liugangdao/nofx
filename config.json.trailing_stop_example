@@ -1,0 +1,42 @@
+{
+  "traders": [
+    {
+      "id": "example_trader",
+      "name": "Example Trader with Trailing Stop",
+      "enabled": true,
+      "ai_model": "deepseek",
+      "exchange": "hyperliquid",
+      "hyperliquid_private_key": "YOUR_PRIVATE_KEY",
+      "hyperliquid_wallet_addr": "YOUR_WALLET_ADDRESS",
+      "hyperliquid_testnet": false,
+      "deepseek_key": "YOUR_DEEPSEEK_KEY",
+      
+      "enable_screenshot": false,
+      
+      "enable_trailing_stop": true,
+      "trailing_stop_distance": 0.03,
+      "trailing_stop_activation": 0.05,
+      
+      "enable_partial_take_profit": true,
+      
+      "initial_balance": 100,
+      "scan_interval_minutes": 5
+    }
+  ],
+  "leverage": {
+    "btc_eth_leverage": 10,
+    "altcoin_leverage": 5
+  },
+  "use_default_coins": true,
+  "default_coins": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT"
+  ],
+  "coin_pool_api_url": "",
+  "oi_top_api_url": "",
+  "api_server_port": 8080,
+  "max_daily_loss": 10.0,
+  "max_drawdown": 20.0,
+  "stop_trading_minutes": 60
+}

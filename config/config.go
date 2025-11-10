@@ -44,6 +44,14 @@ type TraderConfig struct {
 	CustomAPIKey    string `json:"custom_api_key,omitempty"`
 	CustomModelName string `json:"custom_model_name,omitempty"`
 
+	// 移动止盈配置
+	EnableTrailingStop     bool    `json:"enable_trailing_stop,omitempty"`     // 是否启用移动止盈
+	TrailingStopDistance   float64 `json:"trailing_stop_distance,omitempty"`   // 移动止盈距离（从峰值回撤百分比，如0.03表示回撤3%时止盈）
+	TrailingStopActivation float64 `json:"trailing_stop_activation,omitempty"` // 移动止盈激活条件（盈利达到多少时触发，如0.05表示盈利5%时激活）
+
+	// 分仓止盈配置（基于AI给出的止盈价格）
+	EnablePartialTakeProfit bool `json:"enable_partial_take_profit,omitempty"` // 是否启用分仓止盈（达到50%目标平50%仓位，达到100%目标平剩余50%）
+
 	InitialBalance      float64 `json:"initial_balance"`
 	ScanIntervalMinutes int     `json:"scan_interval_minutes"`
 }
@@ -179,6 +187,18 @@ func (c *Config) Validate() error {
 		if trader.ScanIntervalMinutes <= 0 {
 			trader.ScanIntervalMinutes = 3 // 默认3分钟
 		}
+
+		// 验证移动止盈配置
+		if trader.EnableTrailingStop {
+			if trader.TrailingStopDistance <= 0 || trader.TrailingStopDistance >= 1 {
+				return fmt.Errorf("trader[%d]: trailing_stop_distance必须在0到1之间（如0.03表示3%%）", i)
+			}
+			if trader.TrailingStopActivation <= 0 || trader.TrailingStopActivation >= 1 {
+				return fmt.Errorf("trader[%d]: trailing_stop_activation必须在0到1之间（如0.05表示5%%）", i)
+			}
+		}
+
+		// 分仓止盈无需额外验证（基于AI给出的止盈价格自动计算）
 	}
 
 	if c.APIServerPort <= 0 {

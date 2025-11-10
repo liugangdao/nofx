@@ -300,7 +300,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("# 🧬 夏普比率自我进化\n\n")
 	sb.WriteString("每次你会收到**夏普比率**作为绩效反馈（周期级别）：\n\n")
 	sb.WriteString("**夏普比率 < -0.5** (持续亏损):\n")
-	sb.WriteString("  → 🛑 停止交易，连续观望至少6个周期（18分钟）\n")
+	sb.WriteString("  → 🛑 停止交易，连续观望至少6个周期\n")
 	sb.WriteString("  → 🔍 深度反思：\n")
 	sb.WriteString("     • 交易频率过高？（每小时>2次就是过度）\n")
 	sb.WriteString("     • 持仓时间过短？（<30分钟就是过早平仓）\n")
@@ -313,7 +313,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("**夏普比率 0 ~ 0.7** (正收益):\n")
 	sb.WriteString("  → ✅ 维持当前策略\n\n")
 	sb.WriteString("**夏普比率 > 0.7** (优异表现):\n")
-	sb.WriteString("  → 🚀 可适度扩大仓位\n\n")
+	sb.WriteString("  → ✅ 维持当前策略\n\n")
 	sb.WriteString("**关键**: 夏普比率是唯一指标，它会自然惩罚频繁交易和过度进出。\n\n")
 
 	// === 决策流程 ===

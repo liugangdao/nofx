@@ -64,6 +64,14 @@ type AutoTraderConfig struct {
 	BTCETHLeverage  int // BTC和ETH的杠杆倍数
 	AltcoinLeverage int // 山寨币的杠杆倍数
 
+	// 移动止盈配置
+	EnableTrailingStop     bool    // 是否启用移动止盈
+	TrailingStopDistance   float64 // 移动止盈距离（从峰值回撤百分比）
+	TrailingStopActivation float64 // 移动止盈激活条件（盈利达到多少时触发）
+
+	// 分仓止盈配置（基于AI给出的止盈价格）
+	EnablePartialTakeProfit bool // 是否启用分仓止盈（50%目标平50%仓位，100%目标平剩余50%）
+
 	// 风险控制（仅作为提示，AI可自主决定）
 	MaxDailyLoss    float64       // 最大日亏损百分比（提示）
 	MaxDrawdown     float64       // 最大回撤百分比（提示）
@@ -96,8 +104,13 @@ type AutoTrader struct {
 
 // PnLTracking 持仓盈亏跟踪数据
 type PnLTracking struct {
-	MaxProfitPct float64 // 最大盈利百分比
-	MaxLossPct   float64 // 最大亏损百分比（负数）
+	MaxProfitPct          float64 // 最大盈利百分比
+	MaxLossPct            float64 // 最大亏损百分比（负数）
+	TakeProfitPrice       float64 // AI设置的止盈价格
+	EntryPrice            float64 // 开仓价格
+	PartialTP50Executed   bool    // 是否已执行50%止盈
+	PartialTP100Executed  bool    // 是否已执行100%止盈
+	TrailingStopActivated bool    // 移动止盈是否已激活（一旦激活就持续跟踪）
 }
 
 // NewAutoTrader 创建自动交易器
@@ -313,7 +326,28 @@ func (at *AutoTrader) runCycle() error {
 	log.Printf("📊 账户净值: %.2f USDT | 可用: %.2f USDT | 持仓: %d",
 		ctx.Account.TotalEquity, ctx.Account.AvailableBalance, ctx.Account.PositionCount)
 
-	// 4. 调用AI获取完整决策
+	// 4. 检查移动止盈和分仓止盈（在AI决策之前执行）
+	hasExecutedTP := false
+	if err := at.checkTrailingStopAndPartialTP(ctx, record, &hasExecutedTP); err != nil {
+		log.Printf("⚠️  检查止盈条件失败: %v", err)
+	}
+
+	// 5. 如果执行了止盈操作，重新构建交易上下文（确保AI看到最新的持仓数据）
+	if hasExecutedTP {
+		log.Println("🔄 止盈操作已执行，重新获取最新持仓数据...")
+		time.Sleep(2 * time.Second) // 等待交易所更新持仓数据
+		ctx, err = at.buildTradingContext()
+		if err != nil {
+			record.Success = false
+			record.ErrorMessage = fmt.Sprintf("重新构建交易上下文失败: %v", err)
+			at.decisionLogger.LogDecision(record)
+			return fmt.Errorf("重新构建交易上下文失败: %w", err)
+		}
+		log.Printf("📊 更新后账户净值: %.2f USDT | 可用: %.2f USDT | 持仓: %d",
+			ctx.Account.TotalEquity, ctx.Account.AvailableBalance, ctx.Account.PositionCount)
+	}
+
+	// 6. 调用AI获取完整决策
 	log.Println("🤖 正在请求AI分析并决策...")
 	decision, err := decision.GetFullDecision(ctx, at.mcpClient, at.enableScreenshot)
 
@@ -344,14 +378,14 @@ func (at *AutoTrader) runCycle() error {
 		return fmt.Errorf("获取AI决策失败: %w", err)
 	}
 
-	// 5. 打印AI思维链
+	// 7. 打印AI思维链
 	log.Printf("\n" + strings.Repeat("-", 70))
 	log.Println("💭 AI思维链分析:")
 	log.Println(strings.Repeat("-", 70))
 	log.Println(decision.CoTTrace)
 	log.Printf(strings.Repeat("-", 70) + "\n")
 
-	// 6. 打印AI决策
+	// 8. 打印AI决策
 	log.Printf("📋 AI决策列表 (%d 个):\n", len(decision.Decisions))
 	for i, d := range decision.Decisions {
 		log.Printf("  [%d] %s: %s - %s", i+1, d.Symbol, d.Action, d.Reasoning)
@@ -362,7 +396,7 @@ func (at *AutoTrader) runCycle() error {
 	}
 	log.Println()
 
-	// 7. 对决策排序：确保先平仓后开仓（防止仓位叠加超限）
+	// 9. 对决策排序：确保先平仓后开仓（防止仓位叠加超限）
 	sortedDecisions := sortDecisionsByPriority(decision.Decisions)
 
 	log.Println("🔄 执行顺序（已优化）: 先平仓→后开仓")
@@ -371,7 +405,7 @@ func (at *AutoTrader) runCycle() error {
 	}
 	log.Println()
 
-	// 执行决策并记录结果
+	// 10. 执行决策并记录结果
 	for _, d := range sortedDecisions {
 		actionRecord := logger.DecisionAction{
 			Action:    d.Action,
@@ -397,11 +431,182 @@ func (at *AutoTrader) runCycle() error {
 		record.Decisions = append(record.Decisions, actionRecord)
 	}
 
-	// 8. 保存决策记录
+	// 11. 保存决策记录
 	if err := at.decisionLogger.LogDecision(record); err != nil {
 		log.Printf("⚠ 保存决策记录失败: %v", err)
 	}
 
+	return nil
+}
+
+// checkTrailingStopAndPartialTP 检查移动止盈和分仓止盈条件
+func (at *AutoTrader) checkTrailingStopAndPartialTP(ctx *decision.Context, record *logger.DecisionRecord, hasExecuted *bool) error {
+	if len(ctx.Positions) == 0 {
+		return nil
+	}
+
+	for _, pos := range ctx.Positions {
+		posKey := pos.Symbol + "_" + pos.Side
+		tracking := at.positionPnLTracking[posKey]
+		if tracking == nil {
+			continue
+		}
+
+		// 1. 检查移动止盈
+		if at.config.EnableTrailingStop {
+			// 检查是否达到激活条件（只需要达到一次，之后就持续跟踪）
+			if !tracking.TrailingStopActivated && pos.UnrealizedPnLPct >= at.config.TrailingStopActivation*100 {
+				tracking.TrailingStopActivated = true
+				log.Printf("✨ [移动止盈激活] %s %s: 盈利%.2f%% 达到激活条件%.2f%%, 开始跟踪峰值",
+					pos.Symbol, pos.Side, pos.UnrealizedPnLPct, at.config.TrailingStopActivation*100)
+			}
+
+			// 如果已激活，检查是否触发移动止盈（从峰值回撤超过设定距离）
+			if tracking.TrailingStopActivated {
+				drawdownFromPeak := (tracking.MaxProfitPct - pos.UnrealizedPnLPct) / 100
+				if drawdownFromPeak >= at.config.TrailingStopDistance {
+					log.Printf("🎯 [移动止盈] %s %s: 盈利%.2f%% (峰值%.2f%%), 回撤%.2f%% >= %.2f%%, 触发移动止盈",
+						pos.Symbol, pos.Side, pos.UnrealizedPnLPct, tracking.MaxProfitPct,
+						drawdownFromPeak*100, at.config.TrailingStopDistance*100)
+
+					// 执行平仓
+					if err := at.executeTrailingStop(&pos, record); err != nil {
+						log.Printf("❌ 移动止盈平仓失败: %v", err)
+					} else {
+						log.Printf("✓ 移动止盈平仓成功")
+						*hasExecuted = true
+					}
+					continue
+				}
+			}
+		}
+
+		// 2. 检查分仓止盈（基于AI给出的止盈价格）
+		if at.config.EnablePartialTakeProfit && tracking.TakeProfitPrice > 0 {
+			// 计算50%和100%目标价格
+			var target50Price, target100Price float64
+			if pos.Side == "long" {
+				// 多仓：目标价格 > 开仓价格
+				priceMove := tracking.TakeProfitPrice - tracking.EntryPrice
+				target50Price = tracking.EntryPrice + priceMove*0.5
+				target100Price = tracking.TakeProfitPrice
+			} else {
+				// 空仓：目标价格 < 开仓价格
+				priceMove := tracking.EntryPrice - tracking.TakeProfitPrice
+				target50Price = tracking.EntryPrice - priceMove*0.5
+				target100Price = tracking.TakeProfitPrice
+			}
+
+			// 检查50%目标
+			if !tracking.PartialTP50Executed {
+				reachedTarget := false
+				if pos.Side == "long" && pos.MarkPrice >= target50Price {
+					reachedTarget = true
+				} else if pos.Side == "short" && pos.MarkPrice <= target50Price {
+					reachedTarget = true
+				}
+
+				if reachedTarget {
+					log.Printf("🎯 [分仓止盈50%%] %s %s: 当前价%.4f 达到50%%目标%.4f, 平仓50%%",
+						pos.Symbol, pos.Side, pos.MarkPrice, target50Price)
+
+					if err := at.executePartialTakeProfit(&pos, 0.5, record); err != nil {
+						log.Printf("❌ 分仓止盈50%%失败: %v", err)
+					} else {
+						log.Printf("✓ 分仓止盈50%%成功")
+						*hasExecuted = true
+						tracking.PartialTP50Executed = true
+					}
+				}
+			}
+
+			// 检查100%目标
+			if !tracking.PartialTP100Executed {
+				reachedTarget := false
+				if pos.Side == "long" && pos.MarkPrice >= target100Price {
+					reachedTarget = true
+				} else if pos.Side == "short" && pos.MarkPrice <= target100Price {
+					reachedTarget = true
+				}
+
+				if reachedTarget {
+					log.Printf("🎯 [分仓止盈100%%] %s %s: 当前价%.4f 达到100%%目标%.4f, 平仓剩余50%%",
+						pos.Symbol, pos.Side, pos.MarkPrice, target100Price)
+
+					if err := at.executePartialTakeProfit(&pos, 0.5, record); err != nil {
+						log.Printf("❌ 分仓止盈100%%失败: %v", err)
+					} else {
+						log.Printf("✓ 分仓止盈100%%成功")
+						*hasExecuted = true
+						tracking.PartialTP100Executed = true
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// executeTrailingStop 执行移动止盈平仓
+func (at *AutoTrader) executeTrailingStop(pos *decision.PositionInfo, record *logger.DecisionRecord) error {
+	actionRecord := logger.DecisionAction{
+		Action:    "trailing_stop_" + pos.Side,
+		Symbol:    pos.Symbol,
+		Quantity:  pos.Quantity,
+		Price:     pos.MarkPrice,
+		Timestamp: time.Now(),
+		Success:   false,
+	}
+
+	var err error
+	if pos.Side == "long" {
+		_, err = at.trader.CloseLong(pos.Symbol, 0)
+	} else {
+		_, err = at.trader.CloseShort(pos.Symbol, 0)
+	}
+
+	if err != nil {
+		actionRecord.Error = err.Error()
+		record.Decisions = append(record.Decisions, actionRecord)
+		return err
+	}
+
+	actionRecord.Success = true
+	record.Decisions = append(record.Decisions, actionRecord)
+	record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("✓ %s %s 移动止盈成功", pos.Symbol, pos.Side))
+	return nil
+}
+
+// executePartialTakeProfit 执行分仓止盈
+func (at *AutoTrader) executePartialTakeProfit(pos *decision.PositionInfo, closeRatio float64, record *logger.DecisionRecord) error {
+	closeQuantity := pos.Quantity * closeRatio
+
+	actionRecord := logger.DecisionAction{
+		Action:    "partial_tp_" + pos.Side,
+		Symbol:    pos.Symbol,
+		Quantity:  closeQuantity,
+		Price:     pos.MarkPrice,
+		Timestamp: time.Now(),
+		Success:   false,
+	}
+
+	var err error
+	if pos.Side == "long" {
+		_, err = at.trader.CloseLong(pos.Symbol, closeQuantity)
+	} else {
+		_, err = at.trader.CloseShort(pos.Symbol, closeQuantity)
+	}
+
+	if err != nil {
+		actionRecord.Error = err.Error()
+		record.Decisions = append(record.Decisions, actionRecord)
+		return err
+	}
+
+	actionRecord.Success = true
+	record.Decisions = append(record.Decisions, actionRecord)
+	record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("✓ %s %s 分仓止盈%.0f%%成功", pos.Symbol, pos.Side, closeRatio*100))
 	return nil
 }
 
@@ -503,8 +708,8 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 		// 计算从峰值的回撤百分比
 		drawdownFromPeakPct := 0.0
 		if tracking.MaxProfitPct > 0 {
-			// 从峰值回撤 = (峰值盈利 - 当前盈利) / 峰值盈利 * 100
-			drawdownFromPeakPct = (tracking.MaxProfitPct - pnlPct) / tracking.MaxProfitPct * 100
+			// 峰值盈利回撤 = (峰值盈利 - 当前盈利)
+			drawdownFromPeakPct = tracking.MaxProfitPct - pnlPct
 		}
 
 		// 获取开仓理由（使用symbol作为key）
@@ -690,12 +895,29 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 	at.positionInvalidationConditions[decision.Symbol] = decision.InvalidationCondition
 	at.positionReasonings[decision.Symbol] = decision.Reasoning
 
-	// 设置止损止盈
+	// 初始化盈亏跟踪（保存止盈价格用于分仓止盈）
+	if at.config.EnablePartialTakeProfit {
+		if tracking, exists := at.positionPnLTracking[posKey]; exists {
+			tracking.TakeProfitPrice = decision.TakeProfit
+			tracking.EntryPrice = marketData.CurrentPrice
+			tracking.PartialTP50Executed = false
+			tracking.PartialTP100Executed = false
+		}
+	}
+
+	// 设置止损（如果启用分仓止盈，则不设置交易所的止盈单，由系统自动管理）
 	if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, decision.StopLoss); err != nil {
 		log.Printf("  ⚠ 设置止损失败: %v", err)
 	}
-	if err := at.trader.SetTakeProfit(decision.Symbol, "LONG", quantity, decision.TakeProfit); err != nil {
-		log.Printf("  ⚠ 设置止盈失败: %v", err)
+	if !at.config.EnablePartialTakeProfit {
+		// 只有在未启用分仓止盈时才设置交易所的止盈单
+		if err := at.trader.SetTakeProfit(decision.Symbol, "LONG", quantity, decision.TakeProfit); err != nil {
+			log.Printf("  ⚠ 设置止盈失败: %v", err)
+		}
+	} else {
+		log.Printf("  ℹ️  已启用分仓止盈，将在达到50%%目标(%.4f)和100%%目标(%.4f)时自动平仓",
+			marketData.CurrentPrice+(decision.TakeProfit-marketData.CurrentPrice)*0.5,
+			decision.TakeProfit)
 	}
 
 	return nil
@@ -747,12 +969,29 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 	at.positionInvalidationConditions[decision.Symbol] = decision.InvalidationCondition
 	at.positionReasonings[decision.Symbol] = decision.Reasoning
 
-	// 设置止损止盈
+	// 初始化盈亏跟踪（保存止盈价格用于分仓止盈）
+	if at.config.EnablePartialTakeProfit {
+		if tracking, exists := at.positionPnLTracking[posKey]; exists {
+			tracking.TakeProfitPrice = decision.TakeProfit
+			tracking.EntryPrice = marketData.CurrentPrice
+			tracking.PartialTP50Executed = false
+			tracking.PartialTP100Executed = false
+		}
+	}
+
+	// 设置止损（如果启用分仓止盈，则不设置交易所的止盈单，由系统自动管理）
 	if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, decision.StopLoss); err != nil {
 		log.Printf("  ⚠ 设置止损失败: %v", err)
 	}
-	if err := at.trader.SetTakeProfit(decision.Symbol, "SHORT", quantity, decision.TakeProfit); err != nil {
-		log.Printf("  ⚠ 设置止盈失败: %v", err)
+	if !at.config.EnablePartialTakeProfit {
+		// 只有在未启用分仓止盈时才设置交易所的止盈单
+		if err := at.trader.SetTakeProfit(decision.Symbol, "SHORT", quantity, decision.TakeProfit); err != nil {
+			log.Printf("  ⚠ 设置止盈失败: %v", err)
+		}
+	} else {
+		log.Printf("  ℹ️  已启用分仓止盈，将在达到50%%目标(%.4f)和100%%目标(%.4f)时自动平仓",
+			marketData.CurrentPrice-(marketData.CurrentPrice-decision.TakeProfit)*0.5,
+			decision.TakeProfit)
 	}
 
 	return nil

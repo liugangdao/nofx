@@ -416,6 +416,153 @@ func (t *FuturesTrader) CancelAllOrders(symbol string) error {
 	return nil
 }
 
+// CancelStopOrders 取消该币种的止盈/止损单（用于调整止盈止损位置）
+func (t *FuturesTrader) CancelStopOrders(symbol string) error {
+	// 获取该币种的所有未完成订单
+	orders, err := t.client.NewListOpenOrdersService().
+		Symbol(symbol).
+		Do(context.Background())
+
+	if err != nil {
+		return fmt.Errorf("获取未完成订单失败: %w", err)
+	}
+
+	// 过滤出止盈止损单并取消
+	canceledCount := 0
+	for _, order := range orders {
+		orderType := order.Type
+
+		// 只取消止损和止盈订单
+		if orderType == futures.OrderTypeStopMarket ||
+			orderType == futures.OrderTypeTakeProfitMarket ||
+			orderType == futures.OrderTypeStop ||
+			orderType == futures.OrderTypeTakeProfit {
+
+			_, err := t.client.NewCancelOrderService().
+				Symbol(symbol).
+				OrderID(order.OrderID).
+				Do(context.Background())
+
+			if err != nil {
+				log.Printf("  ⚠ 取消订单 %d 失败: %v", order.OrderID, err)
+				continue
+			}
+
+			canceledCount++
+			log.Printf("  ✓ 已取消 %s 的止盈/止损单 (订单ID: %d, 类型: %s)",
+				symbol, order.OrderID, orderType)
+		}
+	}
+
+	if canceledCount == 0 {
+		log.Printf("  ℹ %s 没有止盈/止损单需要取消", symbol)
+	} else {
+		log.Printf("  ✓ 已取消 %s 的 %d 个止盈/止损单", symbol, canceledCount)
+	}
+
+	return nil
+}
+
+// CancelStopLossOrders 仅取消止损单（不影响止盈单）
+func (t *FuturesTrader) CancelStopLossOrders(symbol string) error {
+	// 获取该币种的所有未完成订单
+	orders, err := t.client.NewListOpenOrdersService().
+		Symbol(symbol).
+		Do(context.Background())
+
+	if err != nil {
+		return fmt.Errorf("获取未完成订单失败: %w", err)
+	}
+
+	// 过滤出止损单并取消（取消所有方向的止损单，包括LONG和SHORT）
+	canceledCount := 0
+	var cancelErrors []error
+	for _, order := range orders {
+		orderType := order.Type
+
+		// 只取消止损订单（不取消止盈订单）
+		if orderType == futures.OrderTypeStopMarket || orderType == futures.OrderTypeStop {
+			_, err := t.client.NewCancelOrderService().
+				Symbol(symbol).
+				OrderID(order.OrderID).
+				Do(context.Background())
+
+			if err != nil {
+				errMsg := fmt.Sprintf("订单ID %d: %v", order.OrderID, err)
+				cancelErrors = append(cancelErrors, fmt.Errorf("%s", errMsg))
+				log.Printf("  ⚠ 取消止损单失败: %s", errMsg)
+				continue
+			}
+
+			canceledCount++
+			log.Printf("  ✓ 已取消止损单 (订单ID: %d, 类型: %s, 方向: %s)", order.OrderID, orderType, order.PositionSide)
+		}
+	}
+
+	if canceledCount == 0 && len(cancelErrors) == 0 {
+		log.Printf("  ℹ %s 没有止损单需要取消", symbol)
+	} else if canceledCount > 0 {
+		log.Printf("  ✓ 已取消 %s 的 %d 个止损单", symbol, canceledCount)
+	}
+
+	// 如果所有取消都失败了，返回错误
+	if len(cancelErrors) > 0 && canceledCount == 0 {
+		return fmt.Errorf("取消止损单失败: %v", cancelErrors)
+	}
+
+	return nil
+}
+
+// CancelTakeProfitOrders 仅取消止盈单（不影响止损单）
+func (t *FuturesTrader) CancelTakeProfitOrders(symbol string) error {
+	// 获取该币种的所有未完成订单
+	orders, err := t.client.NewListOpenOrdersService().
+		Symbol(symbol).
+		Do(context.Background())
+
+	if err != nil {
+		return fmt.Errorf("获取未完成订单失败: %w", err)
+	}
+
+	// 过滤出止盈单并取消（取消所有方向的止盈单，包括LONG和SHORT）
+	canceledCount := 0
+	var cancelErrors []error
+	for _, order := range orders {
+		orderType := order.Type
+
+		// 只取消止盈订单（不取消止损订单）
+		if orderType == futures.OrderTypeTakeProfitMarket || orderType == futures.OrderTypeTakeProfit {
+			_, err := t.client.NewCancelOrderService().
+				Symbol(symbol).
+				OrderID(order.OrderID).
+				Do(context.Background())
+
+			if err != nil {
+				errMsg := fmt.Sprintf("订单ID %d: %v", order.OrderID, err)
+				cancelErrors = append(cancelErrors, fmt.Errorf("%s", errMsg))
+				log.Printf("  ⚠ 取消止盈单失败: %s", errMsg)
+				continue
+			}
+
+			canceledCount++
+			log.Printf("  ✓ 已取消止盈单 (订单ID: %d, 类型: %s, 方向: %s)", order.OrderID, orderType, order.PositionSide)
+		}
+	}
+
+	if canceledCount == 0 && len(cancelErrors) == 0 {
+		log.Printf("  ℹ %s 没有止盈单需要取消", symbol)
+	} else if canceledCount > 0 {
+		log.Printf("  ✓ 已取消 %s 的 %d 个止盈单", symbol, canceledCount)
+	}
+
+	// 如果所有取消都失败了，返回错误
+	if len(cancelErrors) > 0 && canceledCount == 0 {
+		return fmt.Errorf("取消止盈单失败: %v", cancelErrors)
+	}
+
+	return nil
+}
+
 // GetMarketPrice 获取市场价格
 func (t *FuturesTrader) GetMarketPrice(symbol string) (float64, error) {
 	prices, err := t.client.NewListPricesService().Symbol(symbol).Do(context.Background())
