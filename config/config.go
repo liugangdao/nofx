@@ -52,6 +52,13 @@ type TraderConfig struct {
 	// 分仓止盈配置（基于AI给出的止盈价格）
 	EnablePartialTakeProfit bool `json:"enable_partial_take_profit,omitempty"` // 是否启用分仓止盈（达到50%目标平50%仓位，达到100%目标平剩余50%）
 
+	// 幂级避让配置（指数退避）
+	EnableExponentialBackoff bool    `json:"enable_exponential_backoff,omitempty"` // 是否启用幂级避让
+	BackoffBaseMinutes       int     `json:"backoff_base_minutes,omitempty"`       // 基础休息时间（分钟），默认45
+	BackoffMultiplier        float64 `json:"backoff_multiplier,omitempty"`         // 倍数，默认2.67（45分钟->2小时->5.3小时）
+	BackoffMaxMinutes        int     `json:"backoff_max_minutes,omitempty"`        // 最大休息时间（分钟），默认360（6小时）
+	BackoffResetHours        int     `json:"backoff_reset_hours,omitempty"`        // 重置计数器的时间（小时），默认24
+
 	InitialBalance      float64 `json:"initial_balance"`
 	ScanIntervalMinutes int     `json:"scan_interval_minutes"`
 }
@@ -199,6 +206,22 @@ func (c *Config) Validate() error {
 		}
 
 		// 分仓止盈无需额外验证（基于AI给出的止盈价格自动计算）
+
+		// 设置幂级避让默认值
+		if trader.EnableExponentialBackoff {
+			if trader.BackoffBaseMinutes <= 0 {
+				trader.BackoffBaseMinutes = 45 // 默认45分钟
+			}
+			if trader.BackoffMultiplier <= 0 {
+				trader.BackoffMultiplier = 2.67 // 默认2.67倍（45->120->320）
+			}
+			if trader.BackoffMaxMinutes <= 0 {
+				trader.BackoffMaxMinutes = 360 // 默认最大6小时
+			}
+			if trader.BackoffResetHours <= 0 {
+				trader.BackoffResetHours = 24 // 默认24小时重置
+			}
+		}
 	}
 
 	if c.APIServerPort <= 0 {

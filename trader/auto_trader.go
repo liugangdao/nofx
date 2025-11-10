@@ -72,6 +72,13 @@ type AutoTraderConfig struct {
 	// 分仓止盈配置（基于AI给出的止盈价格）
 	EnablePartialTakeProfit bool // 是否启用分仓止盈（50%目标平50%仓位，100%目标平剩余50%）
 
+	// 幂级避让配置（指数退避）
+	EnableExponentialBackoff bool    // 是否启用幂级避让
+	BackoffBaseMinutes       int     // 基础休息时间（分钟）
+	BackoffMultiplier        float64 // 倍数
+	BackoffMaxMinutes        int     // 最大休息时间（分钟）
+	BackoffResetHours        int     // 重置计数器的时间（小时）
+
 	// 风险控制（仅作为提示，AI可自主决定）
 	MaxDailyLoss    float64       // 最大日亏损百分比（提示）
 	MaxDrawdown     float64       // 最大回撤百分比（提示）
@@ -100,6 +107,10 @@ type AutoTrader struct {
 	positionInvalidationConditions map[string]string       // 持仓离场条件 (symbol -> invalidation_condition)
 	positionReasonings             map[string]string       // 持仓开仓理由 (symbol -> opening_reason)
 	positionPnLTracking            map[string]*PnLTracking // 持仓盈亏跟踪 (symbol_side -> PnL tracking)
+	stopLossCount                  int                     // 止损次数计数器
+	lastStopLossTime               time.Time               // 最后一次止损时间
+	backoffUntil                   time.Time               // 幂级避让暂停到的时间
+	lastTotalEquity                float64                 // 上一次的账户总额（用于检测亏损）
 }
 
 // PnLTracking 持仓盈亏跟踪数据
@@ -107,6 +118,7 @@ type PnLTracking struct {
 	MaxProfitPct          float64 // 最大盈利百分比
 	MaxLossPct            float64 // 最大亏损百分比（负数）
 	TakeProfitPrice       float64 // AI设置的止盈价格
+	StopLossPrice         float64 // AI设置的止损价格
 	EntryPrice            float64 // 开仓价格
 	PartialTP50Executed   bool    // 是否已执行50%止盈
 	PartialTP100Executed  bool    // 是否已执行100%止盈
@@ -128,6 +140,25 @@ func NewAutoTrader(config AutoTraderConfig) (*AutoTrader, error) {
 		} else {
 			config.AIModel = "deepseek"
 		}
+	}
+
+	// 设置幂级避让默认值
+	if config.EnableExponentialBackoff {
+		if config.BackoffBaseMinutes <= 0 {
+			config.BackoffBaseMinutes = 45 // 默认45分钟
+		}
+		if config.BackoffMultiplier <= 0 {
+			config.BackoffMultiplier = 2.67 // 默认2.67倍
+		}
+		if config.BackoffMaxMinutes <= 0 {
+			config.BackoffMaxMinutes = 360 // 默认最大6小时
+		}
+		if config.BackoffResetHours <= 0 {
+			config.BackoffResetHours = 24 // 默认24小时重置
+		}
+		log.Printf("⚙️  [%s] 幂级避让已启用: 基础%d分钟, 倍数%.2f, 最大%d分钟, %d小时重置",
+			config.Name, config.BackoffBaseMinutes, config.BackoffMultiplier,
+			config.BackoffMaxMinutes, config.BackoffResetHours)
 	}
 
 	mcpClient := mcp.New()
@@ -218,6 +249,9 @@ func NewAutoTrader(config AutoTraderConfig) (*AutoTrader, error) {
 		positionInvalidationConditions: make(map[string]string),
 		positionReasonings:             make(map[string]string),
 		positionPnLTracking:            make(map[string]*PnLTracking),
+		stopLossCount:                  0,
+		lastStopLossTime:               time.Time{},
+		backoffUntil:                   time.Time{},
 	}, nil
 }
 
@@ -269,7 +303,17 @@ func (at *AutoTrader) runCycle() error {
 		Success:      true,
 	}
 
-	// 1. 检查是否需要停止交易
+	// 1. 检查幂级避让暂停
+	if at.config.EnableExponentialBackoff && time.Now().Before(at.backoffUntil) {
+		remaining := at.backoffUntil.Sub(time.Now())
+		log.Printf("⏸ 幂级避让：暂停交易中（第%d次止损），剩余 %.0f 分钟", at.stopLossCount, remaining.Minutes())
+		record.Success = false
+		record.ErrorMessage = fmt.Sprintf("幂级避让暂停中（第%d次止损），剩余 %.0f 分钟", at.stopLossCount, remaining.Minutes())
+		at.decisionLogger.LogDecision(record)
+		return nil
+	}
+
+	// 2. 检查是否需要停止交易（原有风控）
 	if time.Now().Before(at.stopUntil) {
 		remaining := at.stopUntil.Sub(time.Now())
 		log.Printf("⏸ 风险控制：暂停交易中，剩余 %.0f 分钟", remaining.Minutes())
@@ -279,14 +323,25 @@ func (at *AutoTrader) runCycle() error {
 		return nil
 	}
 
-	// 2. 重置日盈亏（每天重置）
+	// 3. 检查是否需要重置止损计数器
+	if at.config.EnableExponentialBackoff && !at.lastStopLossTime.IsZero() {
+		hoursSinceLastStopLoss := time.Since(at.lastStopLossTime).Hours()
+		if hoursSinceLastStopLoss >= float64(at.config.BackoffResetHours) {
+			if at.stopLossCount > 0 {
+				log.Printf("✅ 幂级避让：距离上次止损已超过%d小时，重置计数器（%d -> 0）", at.config.BackoffResetHours, at.stopLossCount)
+				at.stopLossCount = 0
+			}
+		}
+	}
+
+	// 4. 重置日盈亏（每天重置）
 	if time.Since(at.lastResetTime) > 24*time.Hour {
 		at.dailyPnL = 0
 		at.lastResetTime = time.Now()
 		log.Println("📅 日盈亏已重置")
 	}
 
-	// 3. 收集交易上下文
+	// 5. 收集交易上下文
 	ctx, err := at.buildTradingContext()
 	if err != nil {
 		record.Success = false
@@ -326,13 +381,16 @@ func (at *AutoTrader) runCycle() error {
 	log.Printf("📊 账户净值: %.2f USDT | 可用: %.2f USDT | 持仓: %d",
 		ctx.Account.TotalEquity, ctx.Account.AvailableBalance, ctx.Account.PositionCount)
 
-	// 4. 检查移动止盈和分仓止盈（在AI决策之前执行）
+	// 6. 检查止损触发（用于幂级避让）
+	at.checkStopLossTriggered(ctx)
+
+	// 7. 检查移动止盈和分仓止盈（在AI决策之前执行）
 	hasExecutedTP := false
 	if err := at.checkTrailingStopAndPartialTP(ctx, record, &hasExecutedTP); err != nil {
 		log.Printf("⚠️  检查止盈条件失败: %v", err)
 	}
 
-	// 5. 如果执行了止盈操作，重新构建交易上下文（确保AI看到最新的持仓数据）
+	// 8. 如果执行了止盈操作，重新构建交易上下文（确保AI看到最新的持仓数据）
 	if hasExecutedTP {
 		log.Println("🔄 止盈操作已执行，重新获取最新持仓数据...")
 		time.Sleep(2 * time.Second) // 等待交易所更新持仓数据
@@ -347,7 +405,7 @@ func (at *AutoTrader) runCycle() error {
 			ctx.Account.TotalEquity, ctx.Account.AvailableBalance, ctx.Account.PositionCount)
 	}
 
-	// 6. 调用AI获取完整决策
+	// 9. 调用AI获取完整决策
 	log.Println("🤖 正在请求AI分析并决策...")
 	decision, err := decision.GetFullDecision(ctx, at.mcpClient, at.enableScreenshot)
 
@@ -378,14 +436,14 @@ func (at *AutoTrader) runCycle() error {
 		return fmt.Errorf("获取AI决策失败: %w", err)
 	}
 
-	// 7. 打印AI思维链
+	// 10. 打印AI思维链
 	log.Printf("\n" + strings.Repeat("-", 70))
 	log.Println("💭 AI思维链分析:")
 	log.Println(strings.Repeat("-", 70))
 	log.Println(decision.CoTTrace)
 	log.Printf(strings.Repeat("-", 70) + "\n")
 
-	// 8. 打印AI决策
+	// 11. 打印AI决策
 	log.Printf("📋 AI决策列表 (%d 个):\n", len(decision.Decisions))
 	for i, d := range decision.Decisions {
 		log.Printf("  [%d] %s: %s - %s", i+1, d.Symbol, d.Action, d.Reasoning)
@@ -396,7 +454,7 @@ func (at *AutoTrader) runCycle() error {
 	}
 	log.Println()
 
-	// 9. 对决策排序：确保先平仓后开仓（防止仓位叠加超限）
+	// 12. 对决策排序：确保先平仓后开仓（防止仓位叠加超限）
 	sortedDecisions := sortDecisionsByPriority(decision.Decisions)
 
 	log.Println("🔄 执行顺序（已优化）: 先平仓→后开仓")
@@ -405,7 +463,7 @@ func (at *AutoTrader) runCycle() error {
 	}
 	log.Println()
 
-	// 10. 执行决策并记录结果
+	// 13. 执行决策并记录结果
 	for _, d := range sortedDecisions {
 		actionRecord := logger.DecisionAction{
 			Action:    d.Action,
@@ -431,12 +489,113 @@ func (at *AutoTrader) runCycle() error {
 		record.Decisions = append(record.Decisions, actionRecord)
 	}
 
-	// 11. 保存决策记录
+	// 14. 保存决策记录
 	if err := at.decisionLogger.LogDecision(record); err != nil {
 		log.Printf("⚠ 保存决策记录失败: %v", err)
 	}
 
 	return nil
+}
+
+// checkStopLossTriggered 检查是否有止损单被触发（用于幂级避让）
+func (at *AutoTrader) checkStopLossTriggered(ctx *decision.Context) {
+	if !at.config.EnableExponentialBackoff {
+		return
+	}
+
+	// 获取当前持仓的key集合
+	currentPositionKeys := make(map[string]bool)
+	for _, pos := range ctx.Positions {
+		posKey := pos.Symbol + "_" + pos.Side
+		currentPositionKeys[posKey] = true
+	}
+
+	// 检查账户总额是否减少（用于判断是否亏损）
+	currentEquity := ctx.Account.TotalEquity
+	equityDecreased := false
+	if at.lastTotalEquity > 0 && currentEquity < at.lastTotalEquity {
+		equityDecreased = true
+	}
+	// 更新记录的账户总额
+	at.lastTotalEquity = currentEquity
+
+	// 检查是否有持仓消失（可能是止损、止盈或手动平仓）
+	for posKey := range at.positionPnLTracking {
+		if !currentPositionKeys[posKey] {
+			tracking := at.positionPnLTracking[posKey]
+			if tracking == nil {
+				continue
+			}
+
+			// 获取该币种的最新价格
+			parts := strings.Split(posKey, "_")
+			if len(parts) != 2 {
+				continue
+			}
+			symbol := parts[0]
+			side := parts[1]
+
+			// 获取市场价格
+			marketData, err := market.Get(symbol, 3)
+			if err != nil {
+				log.Printf("⚠️  获取 %s 市场价格失败: %v", symbol, err)
+				continue
+			}
+
+			currentPrice := marketData.CurrentPrice
+			stopLossPrice := tracking.StopLossPrice
+			entryPrice := tracking.EntryPrice
+
+			// 判断是否是止损触发（三个条件）
+			// 1. 价格接近止损价（±5%容差）
+			// 2. 账户总额减少
+			// 3. 价格偏离入场价的方向是亏损方向
+			isStopLoss := false
+			priceNearStopLoss := false
+
+			if side == "long" {
+				// 多仓：当前价格应该接近或低于止损价
+				if currentPrice <= stopLossPrice*1.05 {
+					priceNearStopLoss = true
+				}
+			} else {
+				// 空仓：当前价格应该接近或高于止损价
+				if currentPrice >= stopLossPrice*0.95 {
+					priceNearStopLoss = true
+				}
+			}
+
+			// 综合判断：价格接近止损价 + 账户总额减少
+			if priceNearStopLoss && equityDecreased {
+				isStopLoss = true
+			}
+
+			if isStopLoss {
+				at.stopLossCount++
+				at.lastStopLossTime = time.Now()
+
+				// 计算休息时间（指数增长）
+				backoffMinutes := float64(at.config.BackoffBaseMinutes)
+				for i := 1; i < at.stopLossCount; i++ {
+					backoffMinutes *= at.config.BackoffMultiplier
+				}
+
+				// 限制最大休息时间
+				if backoffMinutes > float64(at.config.BackoffMaxMinutes) {
+					backoffMinutes = float64(at.config.BackoffMaxMinutes)
+				}
+
+				at.backoffUntil = time.Now().Add(time.Duration(backoffMinutes) * time.Minute)
+
+				equityChange := currentEquity - at.lastTotalEquity
+				log.Printf("🛑 检测到止损触发（第%d次）：%s", at.stopLossCount, posKey)
+				log.Printf("   止损价: %.4f | 当前价: %.4f | 入场价: %.4f", stopLossPrice, currentPrice, entryPrice)
+				log.Printf("   账户总额: %.2f -> %.2f (%.2f)", at.lastTotalEquity, currentEquity, equityChange)
+				log.Printf("⏸ 幂级避让启动：暂停交易%.0f分钟（至%s）",
+					backoffMinutes, at.backoffUntil.Format("15:04:05"))
+			}
+		}
+	}
 }
 
 // checkTrailingStopAndPartialTP 检查移动止盈和分仓止盈条件
@@ -708,7 +867,7 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 		// 计算从峰值的回撤百分比
 		drawdownFromPeakPct := 0.0
 		if tracking.MaxProfitPct > 0 {
-			// 峰值盈利回撤 = (峰值盈利 - 当前盈利)
+			// 峰值盈利回撤 = 峰值盈利 - 当前盈利
 			drawdownFromPeakPct = tracking.MaxProfitPct - pnlPct
 		}
 
@@ -895,14 +1054,14 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 	at.positionInvalidationConditions[decision.Symbol] = decision.InvalidationCondition
 	at.positionReasonings[decision.Symbol] = decision.Reasoning
 
-	// 初始化盈亏跟踪（保存止盈价格用于分仓止盈）
-	if at.config.EnablePartialTakeProfit {
-		if tracking, exists := at.positionPnLTracking[posKey]; exists {
-			tracking.TakeProfitPrice = decision.TakeProfit
-			tracking.EntryPrice = marketData.CurrentPrice
-			tracking.PartialTP50Executed = false
-			tracking.PartialTP100Executed = false
-		}
+	// 初始化盈亏跟踪（保存止盈价格和止损价格）
+	at.positionPnLTracking[posKey] = &PnLTracking{
+		TakeProfitPrice:       decision.TakeProfit,
+		StopLossPrice:         decision.StopLoss,
+		EntryPrice:            marketData.CurrentPrice,
+		PartialTP50Executed:   false,
+		PartialTP100Executed:  false,
+		TrailingStopActivated: false,
 	}
 
 	// 设置止损（如果启用分仓止盈，则不设置交易所的止盈单，由系统自动管理）
@@ -969,14 +1128,14 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 	at.positionInvalidationConditions[decision.Symbol] = decision.InvalidationCondition
 	at.positionReasonings[decision.Symbol] = decision.Reasoning
 
-	// 初始化盈亏跟踪（保存止盈价格用于分仓止盈）
-	if at.config.EnablePartialTakeProfit {
-		if tracking, exists := at.positionPnLTracking[posKey]; exists {
-			tracking.TakeProfitPrice = decision.TakeProfit
-			tracking.EntryPrice = marketData.CurrentPrice
-			tracking.PartialTP50Executed = false
-			tracking.PartialTP100Executed = false
-		}
+	// 初始化盈亏跟踪（保存止盈价格和止损价格）
+	at.positionPnLTracking[posKey] = &PnLTracking{
+		TakeProfitPrice:       decision.TakeProfit,
+		StopLossPrice:         decision.StopLoss,
+		EntryPrice:            marketData.CurrentPrice,
+		PartialTP50Executed:   false,
+		PartialTP100Executed:  false,
+		TrailingStopActivated: false,
 	}
 
 	// 设置止损（如果启用分仓止盈，则不设置交易所的止盈单，由系统自动管理）
