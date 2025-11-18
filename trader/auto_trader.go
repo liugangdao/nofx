@@ -293,9 +293,9 @@ func (at *AutoTrader) Stop() {
 func (at *AutoTrader) runCycle() error {
 	at.callCount++
 
-	log.Printf("\n" + strings.Repeat("=", 70))
+	log.Printf("%s", "\n"+strings.Repeat("=", 70))
 	log.Printf("⏰ %s - AI决策周期 #%d", time.Now().Format("2006-01-02 15:04:05"), at.callCount)
-	log.Printf(strings.Repeat("=", 70))
+	log.Printf("%s", strings.Repeat("=", 70))
 
 	// 创建决策记录
 	record := &logger.DecisionRecord{
@@ -305,7 +305,7 @@ func (at *AutoTrader) runCycle() error {
 
 	// 1. 检查幂级避让暂停
 	if at.config.EnableExponentialBackoff && time.Now().Before(at.backoffUntil) {
-		remaining := at.backoffUntil.Sub(time.Now())
+		remaining := time.Until(at.backoffUntil)
 		log.Printf("⏸ 幂级避让：暂停交易中（第%d次止损），剩余 %.0f 分钟", at.stopLossCount, remaining.Minutes())
 		record.Success = false
 		record.ErrorMessage = fmt.Sprintf("幂级避让暂停中（第%d次止损），剩余 %.0f 分钟", at.stopLossCount, remaining.Minutes())
@@ -315,7 +315,7 @@ func (at *AutoTrader) runCycle() error {
 
 	// 2. 检查是否需要停止交易（原有风控）
 	if time.Now().Before(at.stopUntil) {
-		remaining := at.stopUntil.Sub(time.Now())
+		remaining := time.Until(at.stopUntil)
 		log.Printf("⏸ 风险控制：暂停交易中，剩余 %.0f 分钟", remaining.Minutes())
 		record.Success = false
 		record.ErrorMessage = fmt.Sprintf("风险控制暂停中，剩余 %.0f 分钟", remaining.Minutes())
@@ -425,11 +425,11 @@ func (at *AutoTrader) runCycle() error {
 
 		// 打印AI思维链（即使有错误）
 		if decision != nil && decision.CoTTrace != "" {
-			log.Printf("\n" + strings.Repeat("-", 70))
+			log.Printf("%s", "\n"+strings.Repeat("-", 70))
 			log.Println("💭 AI思维链分析（错误情况）:")
 			log.Println(strings.Repeat("-", 70))
 			log.Println(decision.CoTTrace)
-			log.Printf(strings.Repeat("-", 70) + "\n")
+			log.Printf("%s", strings.Repeat("-", 70)+"\n")
 		}
 
 		at.decisionLogger.LogDecision(record)
@@ -437,11 +437,11 @@ func (at *AutoTrader) runCycle() error {
 	}
 
 	// 10. 打印AI思维链
-	log.Printf("\n" + strings.Repeat("-", 70))
+	log.Printf("%s", "\n"+strings.Repeat("-", 70))
 	log.Println("💭 AI思维链分析:")
 	log.Println(strings.Repeat("-", 70))
 	log.Println(decision.CoTTrace)
-	log.Printf(strings.Repeat("-", 70) + "\n")
+	log.Printf("%s", strings.Repeat("-", 70)+"\n")
 
 	// 11. 打印AI决策
 	log.Printf("📋 AI决策列表 (%d 个):\n", len(decision.Decisions))
@@ -516,8 +516,6 @@ func (at *AutoTrader) checkStopLossTriggered(ctx *decision.Context) {
 	if at.lastTotalEquity > 0 && currentEquity < at.lastTotalEquity {
 		equityDecreased = true
 	}
-	// 更新记录的账户总额
-	at.lastTotalEquity = currentEquity
 
 	// 检查是否有持仓消失（可能是止损、止盈或手动平仓）
 	for posKey := range at.positionPnLTracking {
@@ -546,28 +544,61 @@ func (at *AutoTrader) checkStopLossTriggered(ctx *decision.Context) {
 			stopLossPrice := tracking.StopLossPrice
 			entryPrice := tracking.EntryPrice
 
-			// 判断是否是止损触发（三个条件）
-			// 1. 价格接近止损价（±5%容差）
-			// 2. 账户总额减少
-			// 3. 价格偏离入场价的方向是亏损方向
+			// 判断是否是止损触发（改进的判断逻辑）
+			// 核心思路：如果账户总额减少 + 持仓消失 = 很可能是止损
 			isStopLoss := false
-			priceNearStopLoss := false
 
-			if side == "long" {
-				// 多仓：当前价格应该接近或低于止损价
-				if currentPrice <= stopLossPrice*1.05 {
-					priceNearStopLoss = true
-				}
-			} else {
-				// 空仓：当前价格应该接近或高于止损价
-				if currentPrice >= stopLossPrice*0.95 {
-					priceNearStopLoss = true
-				}
+			// 条件1：账户总额必须减少（这是止损的核心特征）
+			if !equityDecreased {
+				log.Printf("   ℹ️  %s 持仓消失但账户总额未减少，可能是止盈或手动平仓，跳过", posKey)
+				continue
 			}
 
-			// 综合判断：价格接近止损价 + 账户总额减少
-			if priceNearStopLoss && equityDecreased {
-				isStopLoss = true
+			// 条件2：检查是否是亏损方向（防止误判止盈为止损）
+			// 如果止损价格有效（>0），检查价格是否在止损方向
+			if stopLossPrice > 0 {
+				priceNearStopLoss := false
+				if side == "long" {
+					// 多仓：当前价格应该接近或低于止损价（容差5%，因为价格可能已反弹）
+					if currentPrice <= stopLossPrice*1.05 {
+						priceNearStopLoss = true
+					}
+				} else {
+					// 空仓：当前价格应该接近或高于止损价（容差5%）
+					if currentPrice >= stopLossPrice*0.95 {
+						priceNearStopLoss = true
+					}
+				}
+
+				if priceNearStopLoss {
+					isStopLoss = true
+				} else {
+					log.Printf("   ℹ️  %s 价格(%.4f)偏离止损价(%.4f)过远，可能不是止损触发", posKey, currentPrice, stopLossPrice)
+				}
+			} else {
+				// 如果止损价格无效，使用入场价格判断亏损方向
+				if entryPrice > 0 {
+					isProfitable := false
+					if side == "long" {
+						isProfitable = currentPrice > entryPrice
+					} else {
+						isProfitable = currentPrice < entryPrice
+					}
+
+					// 如果是盈利方向，不认为是止损
+					if isProfitable {
+						log.Printf("   ℹ️  %s 当前价格(%.4f)相对入场价(%.4f)是盈利方向，不认为是止损", posKey, currentPrice, entryPrice)
+						continue
+					} else {
+						// 亏损方向 + 账户总额减少 = 很可能是止损
+						isStopLoss = true
+					}
+				} else {
+					// 如果连入场价格都没有，只能根据账户总额减少来判断
+					// 为了安全起见，认为是止损
+					log.Printf("   ⚠️  %s 缺少止损价格和入场价格信息，根据账户总额减少判断为止损", posKey)
+					isStopLoss = true
+				}
 			}
 
 			if isStopLoss {
@@ -596,6 +627,9 @@ func (at *AutoTrader) checkStopLossTriggered(ctx *decision.Context) {
 			}
 		}
 	}
+
+	// 在检测完所有止损后，更新记录的账户总额（关键：必须在检测之后更新）
+	at.lastTotalEquity = currentEquity
 }
 
 // checkTrailingStopAndPartialTP 检查移动止盈和分仓止盈条件
@@ -891,6 +925,8 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 			MaxProfitPct:          tracking.MaxProfitPct,
 			MaxLossPct:            tracking.MaxLossPct,
 			DrawdownFromPeakPct:   drawdownFromPeakPct,
+			StopLossPrice:         tracking.StopLossPrice,
+			TakeProfitPrice:       tracking.TakeProfitPrice,
 		})
 	}
 
