@@ -27,8 +27,8 @@ import (
 // AsterTrader Aster交易平台实现
 type AsterTrader struct {
 	ctx        context.Context
-	user       string           // 主钱包地址 (ERC20)
-	signer     string           // API钱包地址
+	user       string            // 主钱包地址 (ERC20)
+	signer     string            // API钱包地址
 	privateKey *ecdsa.PrivateKey // API钱包私钥
 	client     *http.Client
 	baseURL    string
@@ -99,9 +99,9 @@ func (t *AsterTrader) getPrecision(symbol string) (SymbolPrecision, error) {
 	body, _ := io.ReadAll(resp.Body)
 	var info struct {
 		Symbols []struct {
-			Symbol            string `json:"symbol"`
-			PricePrecision    int    `json:"pricePrecision"`
-			QuantityPrecision int    `json:"quantityPrecision"`
+			Symbol            string                   `json:"symbol"`
+			PricePrecision    int                      `json:"pricePrecision"`
+			QuantityPrecision int                      `json:"quantityPrecision"`
 			Filters           []map[string]interface{} `json:"filters"`
 		} `json:"symbols"`
 	}
@@ -506,14 +506,14 @@ func (t *AsterTrader) GetPositions() ([]map[string]interface{}, error) {
 
 		// 返回与Binance相同的字段名
 		result = append(result, map[string]interface{}{
-			"symbol":            pos["symbol"],
-			"side":              side,
-			"positionAmt":       posAmt,
-			"entryPrice":        entryPrice,
-			"markPrice":         markPrice,
-			"unRealizedProfit":  unRealizedProfit,
-			"leverage":          leverageVal,
-			"liquidationPrice":  liquidationPrice,
+			"symbol":           pos["symbol"],
+			"side":             side,
+			"positionAmt":      posAmt,
+			"entryPrice":       entryPrice,
+			"markPrice":        markPrice,
+			"unRealizedProfit": unRealizedProfit,
+			"leverage":         leverageVal,
+			"liquidationPrice": liquidationPrice,
 		})
 	}
 
@@ -947,6 +947,20 @@ func (t *AsterTrader) CancelAllOrders(symbol string) error {
 
 	_, err := t.request("DELETE", "/fapi/v3/allOpenOrders", params)
 	return err
+}
+
+// CancelStopLossOrders 仅取消止损单（Aster暂时取消所有订单）
+func (t *AsterTrader) CancelStopLossOrders(symbol string) error {
+	// Aster API 暂时无法区分止损和止盈单，取消所有订单
+	log.Printf("  ⚠️  Aster暂不支持单独取消止损单，将取消所有订单")
+	return t.CancelAllOrders(symbol)
+}
+
+// CancelTakeProfitOrders 仅取消止盈单（Aster暂时取消所有订单）
+func (t *AsterTrader) CancelTakeProfitOrders(symbol string) error {
+	// Aster API 暂时无法区分止损和止盈单，取消所有订单
+	log.Printf("  ⚠️  Aster暂不支持单独取消止盈单，将取消所有订单")
+	return t.CancelAllOrders(symbol)
 }
 
 // FormatQuantity 格式化数量（实现Trader接口）

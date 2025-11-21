@@ -40,7 +40,7 @@ func New() *Client {
 	var defaultClient = Client{
 		Provider: ProviderDeepSeek,
 		BaseURL:  "https://api.deepseek.com/v1",
-		Model:    "deepseek-chat",
+		Model:    "deepseek-reasoner",
 		Timeout:  120 * time.Second, // 增加到120秒，因为AI需要分析大量数据
 	}
 	return &defaultClient
@@ -51,7 +51,7 @@ func (cfg *Client) SetDeepSeekAPIKey(apiKey string) {
 	cfg.Provider = ProviderDeepSeek
 	cfg.APIKey = apiKey
 	cfg.BaseURL = "https://api.deepseek.com/v1"
-	cfg.Model = "deepseek-chat"
+	cfg.Model = "deepseek-reasoner"
 }
 
 // SetQwenAPIKey 设置阿里云Qwen API密钥
@@ -86,7 +86,7 @@ func (cfg *Client) SetGeminiAPIKey(apiKey string) error {
 	fmt.Printf("gemini api key: %s\n", apiKey)
 	cfg.Provider = ProviderGemini
 	cfg.APIKey = apiKey
-	cfg.Model = "gemini-2.5-flash" // 默认使用最新的flash模型
+	cfg.Model = "gemini-3-pro-preview" // 默认使用最新的flash模型
 	cfg.Timeout = 120 * time.Second
 
 	// 创建Gemini客户端
@@ -201,8 +201,8 @@ func (cfg *Client) callOnce(systemPrompt, userPrompt string) (string, error) {
 	requestBody := map[string]interface{}{
 		"model":       cfg.Model,
 		"messages":    messages,
-		"temperature": 0.5, // 降低temperature以提高JSON格式稳定性
-		"max_tokens":  2000,
+		"temperature": 0.5,  // 降低temperature以提高JSON格式稳定性
+		"max_tokens":  4000, // 增加到4000以容纳思维链和JSON决策
 	}
 
 	// 注意：response_format 参数仅 OpenAI 支持，DeepSeek/Qwen 不支持
@@ -263,12 +263,15 @@ func (cfg *Client) callOnce(systemPrompt, userPrompt string) (string, error) {
 	var result struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"` // DeepSeek reasoner特有字段
 			} `json:"message"`
 		} `json:"choices"`
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
+		// 如果解析失败，打印原始响应用于调试
+		fmt.Printf("⚠️ 解析响应JSON失败: %v\n原始响应: %s\n", err, string(body))
 		return "", fmt.Errorf("解析响应失败: %w", err)
 	}
 
@@ -276,7 +279,28 @@ func (cfg *Client) callOnce(systemPrompt, userPrompt string) (string, error) {
 		return "", fmt.Errorf("API返回空响应")
 	}
 
-	return result.Choices[0].Message.Content, nil
+	// DeepSeek reasoner模型的推理内容在reasoning_content字段
+	// 最终答案在content字段
+	content := result.Choices[0].Message.Content
+	reasoningContent := result.Choices[0].Message.ReasoningContent
+
+	// 如果content为空但有reasoning_content，使用reasoning_content
+	if content == "" && reasoningContent != "" {
+		fmt.Printf("⚠️ content字段为空，使用reasoning_content字段\n")
+		return reasoningContent, nil
+	}
+
+	// 如果两者都有内容，合并它们（推理过程 + 最终答案）
+	if reasoningContent != "" && content != "" {
+		return reasoningContent + "\n\n" + content, nil
+	}
+
+	if content == "" {
+		fmt.Printf("⚠️ API返回的content和reasoning_content都为空\n原始响应: %s\n", string(body))
+		return "", fmt.Errorf("API返回空内容")
+	}
+
+	return content, nil
 }
 
 // isRetryableError 判断错误是否可重试

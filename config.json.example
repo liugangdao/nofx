@@ -13,19 +13,7 @@
       "initial_balance": 1000,
       "scan_interval_minutes": 3,
       
-      "enable_screenshot": false,
-      
-      "enable_trailing_stop": true,
-      "trailing_stop_distance": 0.03,
-      "trailing_stop_activation": 0.05,
-      
-      "enable_partial_take_profit": true,
-
-      "enable_exponential_backoff": false,
-      "backoff_base_minutes": 45,
-      "backoff_multiplier": 2.67,
-      "backoff_max_minutes": 360,
-      "backoff_reset_hours": 24
+      "enable_screenshot": false
     },
     {
       "id": "binance_qwen",
@@ -37,12 +25,7 @@
       "binance_secret_key": "your_binance_secret_key",
       "qwen_key": "your_qwen_api_key",
       "initial_balance": 1000,
-      "scan_interval_minutes": 3,
-      "enable_exponential_backoff": false,
-      "backoff_base_minutes": 45,
-      "backoff_multiplier": 2.67,
-      "backoff_max_minutes": 360,
-      "backoff_reset_hours": 24
+      "scan_interval_minutes": 3
     },
     {
       "id": "binance_custom",
@@ -56,12 +39,7 @@
       "custom_api_key": "sk-your-api-key",
       "custom_model_name": "gpt-4o",
       "initial_balance": 1000,
-      "scan_interval_minutes": 3,
-      "enable_exponential_backoff": false,
-      "backoff_base_minutes": 45,
-      "backoff_multiplier": 2.67,
-      "backoff_max_minutes": 360,
-      "backoff_reset_hours": 24
+      "scan_interval_minutes": 3
     },
     {
       "id": "aster_deepseek",
@@ -81,12 +59,7 @@
 
       "deepseek_key": "your_deepseek_api_key",
       "initial_balance": 1000.0,
-      "scan_interval_minutes": 3,
-      "enable_exponential_backoff": false,
-      "backoff_base_minutes": 45,
-      "backoff_multiplier": 2.67,
-      "backoff_max_minutes": 360,
-      "backoff_reset_hours": 24
+      "scan_interval_minutes": 3
     }
   ],
   "leverage": {

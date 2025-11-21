@@ -36,6 +36,12 @@ type Trader interface {
 	// CancelAllOrders 取消该币种的所有挂单
 	CancelAllOrders(symbol string) error
 
+	// CancelStopLossOrders 仅取消止损单（不影响止盈单）
+	CancelStopLossOrders(symbol string) error
+
+	// CancelTakeProfitOrders 仅取消止盈单（不影响止损单）
+	CancelTakeProfitOrders(symbol string) error
+
 	// FormatQuantity 格式化数量到正确的精度
 	FormatQuantity(symbol string, quantity float64) (string, error)
 }

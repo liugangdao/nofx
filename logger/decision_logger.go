@@ -287,18 +287,20 @@ type TradeOutcome struct {
 
 // PerformanceAnalysis 交易表现分析
 type PerformanceAnalysis struct {
-	TotalTrades   int                           `json:"total_trades"`   // 总交易数
-	WinningTrades int                           `json:"winning_trades"` // 盈利交易数
-	LosingTrades  int                           `json:"losing_trades"`  // 亏损交易数
-	WinRate       float64                       `json:"win_rate"`       // 胜率
-	AvgWin        float64                       `json:"avg_win"`        // 平均盈利
-	AvgLoss       float64                       `json:"avg_loss"`       // 平均亏损
-	ProfitFactor  float64                       `json:"profit_factor"`  // 盈亏比
-	SharpeRatio   float64                       `json:"sharpe_ratio"`   // 夏普比率（风险调整后收益）
-	RecentTrades  []TradeOutcome                `json:"recent_trades"`  // 最近N笔交易
-	SymbolStats   map[string]*SymbolPerformance `json:"symbol_stats"`   // 各币种表现
-	BestSymbol    string                        `json:"best_symbol"`    // 表现最好的币种
-	WorstSymbol   string                        `json:"worst_symbol"`   // 表现最差的币种
+	TotalTrades     int                           `json:"total_trades"`      // 总交易数
+	WinningTrades   int                           `json:"winning_trades"`    // 盈利交易数
+	LosingTrades    int                           `json:"losing_trades"`     // 亏损交易数
+	BreakEvenTrades int                           `json:"break_even_trades"` // 持平交易数
+	WinRate         float64                       `json:"win_rate"`          // 胜率（%）
+	AvgWin          float64                       `json:"avg_win"`           // 平均盈利（USDT）
+	AvgLoss         float64                       `json:"avg_loss"`          // 平均亏损（USDT）
+	ProfitFactor    float64                       `json:"profit_factor"`     // 盈亏比（总盈利/总亏损）
+	SharpeRatio     float64                       `json:"sharpe_ratio"`      // 夏普比率（风险调整后收益）
+	TotalPnL        float64                       `json:"total_pnl"`         // 总盈亏（USDT）
+	RecentTrades    []TradeOutcome                `json:"recent_trades"`     // 最近N笔交易
+	SymbolStats     map[string]*SymbolPerformance `json:"symbol_stats"`      // 各币种表现
+	BestSymbol      string                        `json:"best_symbol"`       // 表现最好的币种
+	WorstSymbol     string                        `json:"worst_symbol"`      // 表现最差的币种
 }
 
 // SymbolPerformance 币种表现统计
@@ -446,15 +448,19 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 					analysis.RecentTrades = append(analysis.RecentTrades, outcome)
 					analysis.TotalTrades++
 
-					// 分类交易：盈利、亏损、持平（避免将pnl=0算入亏损）
+					// 分类交易：盈利、亏损、持平
 					if pnl > 0 {
 						analysis.WinningTrades++
 						analysis.AvgWin += pnl
+						analysis.TotalPnL += pnl
 					} else if pnl < 0 {
 						analysis.LosingTrades++
 						analysis.AvgLoss += pnl
+						analysis.TotalPnL += pnl
+					} else {
+						// pnl == 0 的交易计为持平
+						analysis.BreakEvenTrades++
 					}
-					// pnl == 0 的交易不计入盈利也不计入亏损，但计入总交易数
 
 					// 更新币种统计
 					if _, exists := analysis.SymbolStats[symbol]; !exists {
@@ -480,26 +486,37 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 
 	// 计算统计指标
 	if analysis.TotalTrades > 0 {
+		// 计算胜率
 		analysis.WinRate = (float64(analysis.WinningTrades) / float64(analysis.TotalTrades)) * 100
 
 		// 计算总盈利和总亏损
 		totalWinAmount := analysis.AvgWin   // 当前是累加的总和
 		totalLossAmount := analysis.AvgLoss // 当前是累加的总和（负数）
 
+		// 计算平均盈利和平均亏损
 		if analysis.WinningTrades > 0 {
-			analysis.AvgWin /= float64(analysis.WinningTrades)
+			analysis.AvgWin = totalWinAmount / float64(analysis.WinningTrades)
+		} else {
+			analysis.AvgWin = 0
 		}
+
 		if analysis.LosingTrades > 0 {
-			analysis.AvgLoss /= float64(analysis.LosingTrades)
+			analysis.AvgLoss = totalLossAmount / float64(analysis.LosingTrades)
+		} else {
+			analysis.AvgLoss = 0
 		}
 
 		// Profit Factor = 总盈利 / 总亏损（绝对值）
 		// 注意：totalLossAmount 是负数，所以取负号得到绝对值
-		if totalLossAmount != 0 {
+		if totalLossAmount < 0 {
+			// 正常情况：有盈利有亏损
 			analysis.ProfitFactor = totalWinAmount / (-totalLossAmount)
-		} else if totalWinAmount > 0 {
+		} else if totalWinAmount > 0 && totalLossAmount == 0 {
 			// 只有盈利没有亏损的情况，设置为一个很大的值表示完美策略
 			analysis.ProfitFactor = 999.0
+		} else {
+			// 没有盈利或其他异常情况
+			analysis.ProfitFactor = 0
 		}
 	}
 

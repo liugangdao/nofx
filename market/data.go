@@ -126,7 +126,7 @@ func Get(symbol string, interval int) (*Data, error) {
 
 	// 计算各时间周期数据
 	timeframe12h := calculateTimeframeData(klines12h, "12h", currentPrice, false)
-	timeframe4h := calculateTimeframeData(klines4h, "4h", currentPrice, false)
+	timeframe4h := calculateTimeframeData(klines4h, "4h", currentPrice, true) // 4h包含BB和ATR
 	timeframe1h := calculateTimeframeData(klines1h, "1h", currentPrice, true) // 1h包含BB和ATR
 
 	return &Data{
@@ -591,7 +591,7 @@ func calculateTimeframeData(klines []Kline, timeframe string, currentPrice float
 	}
 
 	// 计算市场结构
-	data.StructureDetail = calculateMarketStructure(klines, 5)
+	data.StructureDetail = calculateMarketStructure(klines, 3)
 	if data.StructureDetail != nil {
 		data.MarketStructure = data.StructureDetail.LastPattern
 		if data.MarketStructure == "" {

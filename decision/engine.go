@@ -85,6 +85,7 @@ type Decision struct {
 	Action                string  `json:"action"` // "open_long", "open_short", "close_long", "close_short", "hold", "wait"
 	Leverage              int     `json:"leverage,omitempty"`
 	PositionSizeUSD       float64 `json:"position_size_usd,omitempty"`
+	EntryPrice            float64 `json:"entry_price,omitempty"` // 入场价格（开仓时必填）
 	StopLoss              float64 `json:"stop_loss,omitempty"`
 	TakeProfit            float64 `json:"take_profit,omitempty"`
 	Confidence            int     `json:"confidence,omitempty"` // 信心度 (0-100)
@@ -157,6 +158,12 @@ func GetFullDecision(ctx *Context, mcpClient *mcp.Client, enableScreenshot bool)
 	// 5. 解析AI响应
 	decision, err := parseFullDecisionResponse(aiResponse, ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage)
 	if err != nil {
+		// 记录AI响应的前500个字符用于调试
+		responsePreview := aiResponse
+		if len(responsePreview) > 500 {
+			responsePreview = responsePreview[:500] + "..."
+		}
+		log.Printf("❌ AI响应解析失败，响应预览:\n%s", responsePreview)
 		return nil, fmt.Errorf("解析AI响应失败: %w", err)
 	}
 
@@ -255,18 +262,17 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	// === 核心使命 ===
 	sb.WriteString("你是专业的中长线加密货币交易员，在合约市场进行自主交易。\n\n")
 	sb.WriteString("# 🎯 核心目标\n\n")
-	sb.WriteString("**最大化夏普比率（Sharpe Ratio）**\n\n")
-	sb.WriteString("夏普比率 = 平均收益 / 收益波动率\n\n")
-	sb.WriteString("**这意味着**：\n")
-	sb.WriteString("- ✅ 高质量交易（高胜率、大盈亏比）→ 提升夏普\n")
-	sb.WriteString("- ✅ 稳定收益、控制回撤 → 提升夏普\n")
-	sb.WriteString("- ✅ 耐心持仓、让利润奔跑 → 提升夏普\n")
+	sb.WriteString("**稳定盈利，严格风控**\n\n")
+	sb.WriteString("**关键指标**：\n")
+	sb.WriteString("- ✅ 高胜率（目标≥50%）\n")
+	sb.WriteString("- ✅ 高盈亏比（目标≥2.0，即平均盈利是平均亏损的2倍以上）\n")
+	sb.WriteString("- ✅ 控制回撤、让利润奔跑\n")
 	sb.WriteString(fmt.Sprintf("**关键认知**: 系统每%d分钟扫描一次，但不意味着每次都要交易\n", scanIntervalMinutes))
 	sb.WriteString("大多数时候应该是 `wait` 或 `hold`，只在极佳机会时才开仓。\n\n")
 
 	// === 硬约束（风险控制）===
 	sb.WriteString("# ⚖️ 硬约束（风险控制）\n\n")
-	sb.WriteString("1. **风险回报比**: 必须 ≥ 1:3（冒1%风险，赚3%+收益）\n")
+	sb.WriteString("1. **盈亏比**: 必须 ≥ 1:3\n")
 	sb.WriteString("2. **最多持仓**: 3个币种（质量>数量，每个周期只能开一个仓位\n")
 	sb.WriteString(fmt.Sprintf("3. **单币仓位**: 山寨%.0f-%.0f U(%dx杠杆) | BTC/ETH %.0f-%.0f U(%dx杠杆)\n",
 		accountEquity*0.2*float64(altcoinLeverage), accountEquity*0.5*(float64(altcoinLeverage)), altcoinLeverage, accountEquity*0.2*float64(btcEthLeverage), accountEquity*0.5*float64(btcEthLeverage), btcEthLeverage))
@@ -298,7 +304,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString(`- 2. 如果是多头：- 只做多（禁止做空）
 - 每次回调到 EMA20–EMA50 区域，可寻找做多机会
 - RSI 鼓励在 40–55 附近的回踩买入
-- 不允许在 RSI > 70 买入
+- 不允许在 RSI > 70 追多
 - 止损：前低下方
 - 止盈：布林带上轨或跟踪止盈\n`)
 	sb.WriteString(`- 3. 如果是空头： - 只做空（禁止做多）
@@ -313,16 +319,18 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 - RSI < 30 买入，RSI > 70 卖出更有效
 - 禁止在区间中间交易\n
 `)
-	sb.WriteString("- 5. 不逆大势交易，只有在大小趋势上都有明确趋势时交易\n")
-	sb.WriteString("- 6. 科学设置止盈和止损位，预期盈亏比1：3\n\n")
+	sb.WriteString("- 5. 不逆大势交易，只有在三周期上都有趋势确认时进行交易，警惕反弹\n")
+	sb.WriteString("- 6. 科学设置止盈和止损位, 预期盈亏比1: 3\n")
+	sb.WriteString("- 7. 入场价格设置为当前价格\n\n")
 	// sb.WriteString("- 多维度交叉验证（价格+量+OI+指标+序列形态）\n")
 
 	// === 决策流程 ===
 	sb.WriteString("# 📋 决策流程\n\n")
-	sb.WriteString("1. **分析夏普比率**: 当前策略是否有效？需要调整吗？\n")
-	sb.WriteString("2. **评估持仓**: 到达离场条件或者止盈位才离场, 否则一直持有(重要)\n")
-	sb.WriteString("3. **评估开仓**: 按照开仓标准进行开仓\n")
-	sb.WriteString("4. **输出决策**: 思维链分析 + JSON\n\n")
+	sb.WriteString("1. **评估持仓**: \n")
+	sb.WriteString("   - 如果浮盈较高（>10%）并且趋势依然很健康，可以通过更新止盈止损(update_loss_profit)位置进行移动止损和移动止盈, 让利润奔跑并锁定利润\n")
+	sb.WriteString("   - 否则继续持有(hold)到达离场条件 (invalidation_condition) 或者止盈位才离场\n")
+	sb.WriteString("2. **评估开仓**: 按照开仓标准进行开仓\n")
+	sb.WriteString("3. **输出决策**: 思维链分析 + JSON\n\n")
 
 	// === 输出格式 ===
 	sb.WriteString("# 📤 输出格式\n\n")
@@ -330,14 +338,16 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("简洁分析你的思考过程\n\n")
 	sb.WriteString("**第二步: JSON决策数组**\n\n")
 	sb.WriteString("```json\n[\n")
-	sb.WriteString(fmt.Sprintf("  {\"symbol\": \"BTCUSDT\", \"action\": \"open_short\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 97000, \"take_profit\": 91000, \"confidence\": 85, \"risk_usd\": 300, \"reasoning\": \"下跌趋势+反弹至阻力位\", \"invalidation_condition\": \"4h close above 98000 (trend reversal)\"},\n", btcEthLeverage, accountEquity*0.33*float64(btcEthLeverage)))
-	sb.WriteString("  {\"symbol\": \"ETHUSDT\", \"action\": \"close_long\", \"reasoning\": \"止盈离场\", \"invalidation_condition\": \"4h close above 98000 (trend reversal)\"}\n")
+	sb.WriteString(fmt.Sprintf("  {\"symbol\": \"BTCUSDT\", \"action\": \"open_short\", \"leverage\": %d, \"position_size_usd\": %.0f, \"entry_price\": 95000, \"stop_loss\": 97000, \"take_profit\": 91000, \"confidence\": 85, \"risk_usd\": 300, \"reasoning\": \"下跌趋势+反弹至阻力位\", \"invalidation_condition\": \"4h close above 98000 (trend reversal)\"},\n", btcEthLeverage, accountEquity*0.33*float64(btcEthLeverage)))
+	sb.WriteString("  {\"symbol\": \"ETHUSDT\", \"action\": \"close_long\", \"reasoning\": \"止盈离场\", \"invalidation_condition\": \"4h close above 98000 (trend reversal)\"},\n")
+	sb.WriteString("  {\"symbol\": \"SOLUSDT\", \"action\": \"update_loss_profit\", \"stop_loss\": 145.5, \"take_profit\": 165.0, \"reasoning\": \"浮盈12%，移动止损至入场价保本，让利润奔跑\", \"invalidation_condition\": \"4h close above 150(trend reversal)\"}\n")
 	sb.WriteString("]\n```\n\n")
 	sb.WriteString("**字段说明**:\n")
-	sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
-	sb.WriteString("- `confidence`: 0-100（开仓建议≥75）\n")
+	sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait | update_loss_profit\n")
+	sb.WriteString("- `confidence`: 0-100（开仓建议≥80）\n")
 	sb.WriteString("- hold 时必填： `invalidation_condition`: hold继续沿用当前持仓的离场条件（不要修改）\n")
-	sb.WriteString("- 开仓时必填: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd, reasoning, invalidation_condition\n\n")
+	sb.WriteString("- 开仓时必填: leverage, position_size_usd, entry_price, stop_loss, take_profit, confidence, risk_usd, reasoning, invalidation_condition\n")
+	sb.WriteString("- update_loss_profit 时必填: stop_loss, take_profit, reasoning（用于移动止损，锁定利润）, invalidation_condition\n\n")
 
 	// === 关键提醒 ===
 	sb.WriteString("---\n\n")
@@ -345,7 +355,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("- 目标是夏普比率，不是交易频率\n")
 	sb.WriteString("- 做空 = 做多，都是赚钱工具\n")
 	sb.WriteString("- 宁可错过，不做低质量交易\n")
-	sb.WriteString("- 风险回报比1:3是底线\n")
+	sb.WriteString("- 盈亏比1:3是底线\n")
 
 	return sb.String()
 }
@@ -396,7 +406,7 @@ func buildUserPrompt(ctx *Context) string {
 			}
 
 			// 显示PnL统计信息
-			sb.WriteString(fmt.Sprintf("%d. %s %s | 入场价%.4f 当前价%.4f | 盈亏%+.2f%% | 杠杆%dx | 保证金%.0f | 强平价%.4f%s | 止损价%.4f | 止盈价%.4f | 最高盈利%+.2f%% | 峰值回撤%+.2f%%\n",
+			sb.WriteString(fmt.Sprintf("%d. %s %s | 入场价%.4f | 当前价%.4f | 盈亏%+.2f%% | 杠杆%dx | 保证金%.0f | 强平价%.4f%s | 止损价%.4f | 止盈价%.4f | 最高盈利%+.2f%% | 峰值回撤%+.2f%%\n",
 				i+1, pos.Symbol, strings.ToUpper(pos.Side),
 				pos.EntryPrice, pos.MarkPrice, pos.UnrealizedPnLPct,
 				pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration, pos.StopLossPrice, pos.TakeProfitPrice, pos.MaxProfitPct, pos.DrawdownFromPeakPct))
@@ -447,16 +457,50 @@ func buildUserPrompt(ctx *Context) string {
 	}
 	sb.WriteString("\n")
 
-	// 夏普比率（直接传值，不要复杂格式化）
+	// 历史表现分析（提供更直观的指标）
 	if ctx.Performance != nil {
-		// 直接从interface{}中提取SharpeRatio
+		// 从interface{}中提取关键指标
 		type PerformanceData struct {
-			SharpeRatio float64 `json:"sharpe_ratio"`
+			TotalTrades   int     `json:"total_trades"`
+			WinningTrades int     `json:"winning_trades"`
+			LosingTrades  int     `json:"losing_trades"`
+			WinRate       float64 `json:"win_rate"`
+			AvgWin        float64 `json:"avg_win"`
+			AvgLoss       float64 `json:"avg_loss"`
+			ProfitFactor  float64 `json:"profit_factor"`
+			SharpeRatio   float64 `json:"sharpe_ratio"`
 		}
 		var perfData PerformanceData
 		if jsonData, err := json.Marshal(ctx.Performance); err == nil {
 			if err := json.Unmarshal(jsonData, &perfData); err == nil {
-				sb.WriteString(fmt.Sprintf("## 📊 夏普比率: %.2f\n\n", perfData.SharpeRatio))
+				sb.WriteString("## 📊 近期表现（最近完成的交易）\n\n")
+
+				if perfData.TotalTrades > 0 {
+					sb.WriteString(fmt.Sprintf("- 总交易数: %d笔 (%d胜/%d负)\n",
+						perfData.TotalTrades, perfData.WinningTrades, perfData.LosingTrades))
+					sb.WriteString(fmt.Sprintf("- 胜率: %.1f%% (目标≥50%%)\n", perfData.WinRate))
+					sb.WriteString(fmt.Sprintf("- 平均盈利: +%.2f USDT | 平均亏损: %.2f USDT\n",
+						perfData.AvgWin, perfData.AvgLoss))
+					sb.WriteString(fmt.Sprintf("- 盈亏比: %.2f (目标≥2.0)\n", perfData.ProfitFactor))
+					sb.WriteString(fmt.Sprintf("- 夏普比率: %.2f\n", perfData.SharpeRatio))
+
+					// 添加条件性建议
+					sb.WriteString("\n**策略建议**:\n")
+					if perfData.WinRate < 40 {
+						sb.WriteString("⚠️ 胜率偏低(<40%)，建议提高开仓标准，只做高确定性交易\n")
+					}
+
+					if perfData.ProfitFactor < 1.5 {
+						sb.WriteString("⚠️ 盈亏比偏低(<1.5)，建议扩大止盈空间或收紧止损\n")
+					}
+
+					if perfData.SharpeRatio < 0 {
+						sb.WriteString("⚠️ 夏普比率为负，策略整体亏损，建议暂停交易或调整策略\n")
+					}
+				} else {
+					sb.WriteString("- 暂无完成的交易记录\n")
+				}
+				sb.WriteString("\n")
 			}
 		}
 	}
@@ -514,7 +558,12 @@ func extractDecisions(response string) ([]Decision, error) {
 	// 直接查找JSON数组 - 找第一个完整的JSON数组
 	arrayStart := strings.Index(response, "[")
 	if arrayStart == -1 {
-		return nil, fmt.Errorf("无法找到JSON数组起始")
+		// 显示响应的前200个字符用于调试
+		preview := response
+		if len(preview) > 200 {
+			preview = preview[:200] + "..."
+		}
+		return nil, fmt.Errorf("无法找到JSON数组起始，响应内容: %s", preview)
 	}
 
 	// 从 [ 开始，匹配括号找到对应的 ]
@@ -585,12 +634,13 @@ func findMatchingBracket(s string, start int) int {
 func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int) error {
 	// 验证action
 	validActions := map[string]bool{
-		"open_long":   true,
-		"open_short":  true,
-		"close_long":  true,
-		"close_short": true,
-		"hold":        true,
-		"wait":        true,
+		"open_long":          true,
+		"open_short":         true,
+		"close_long":         true,
+		"close_short":        true,
+		"hold":               true,
+		"wait":               true,
+		"update_loss_profit": true,
 	}
 
 	if !validActions[d.Action] {
@@ -622,6 +672,9 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 				return fmt.Errorf("山寨币单币种仓位价值不能超过%.0f USDT（1.5倍账户净值），实际: %.0f", maxPositionValue, d.PositionSizeUSD)
 			}
 		}
+		if d.EntryPrice <= 0 {
+			return fmt.Errorf("入场价必须大于0: %.2f", d.EntryPrice)
+		}
 		if d.StopLoss <= 0 || d.TakeProfit <= 0 {
 			return fmt.Errorf("止损和止盈必须大于0")
 		}
@@ -631,45 +684,51 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 
 		// 验证止损止盈的合理性
 		if d.Action == "open_long" {
-			if d.StopLoss >= d.TakeProfit {
-				return fmt.Errorf("做多时止损价必须小于止盈价")
+			if d.StopLoss >= d.EntryPrice {
+				return fmt.Errorf("做多时止损价(%.2f)必须小于入场价(%.2f)", d.StopLoss, d.EntryPrice)
+			}
+			if d.TakeProfit <= d.EntryPrice {
+				return fmt.Errorf("做多时止盈价(%.2f)必须大于入场价(%.2f)", d.TakeProfit, d.EntryPrice)
 			}
 		} else {
-			if d.StopLoss <= d.TakeProfit {
-				return fmt.Errorf("做空时止损价必须大于止盈价")
+			if d.StopLoss <= d.EntryPrice {
+				return fmt.Errorf("做空时止损价(%.2f)必须大于入场价(%.2f)", d.StopLoss, d.EntryPrice)
+			}
+			if d.TakeProfit >= d.EntryPrice {
+				return fmt.Errorf("做空时止盈价(%.2f)必须小于入场价(%.2f)", d.TakeProfit, d.EntryPrice)
 			}
 		}
 
-		// 验证风险回报比（必须≥1:3）
-		// 计算入场价（假设当前市价）
-		var entryPrice float64
-		if d.Action == "open_long" {
-			// 做多：入场价在止损和止盈之间
-			entryPrice = d.StopLoss + (d.TakeProfit-d.StopLoss)*0.2 // 假设在20%位置入场
-		} else {
-			// 做空：入场价在止损和止盈之间
-			entryPrice = d.StopLoss - (d.StopLoss-d.TakeProfit)*0.2 // 假设在20%位置入场
-		}
-
+		// 验证风险回报比（必须≥1:2）
 		var riskPercent, rewardPercent, riskRewardRatio float64
 		if d.Action == "open_long" {
-			riskPercent = (entryPrice - d.StopLoss) / entryPrice * 100
-			rewardPercent = (d.TakeProfit - entryPrice) / entryPrice * 100
+			riskPercent = (d.EntryPrice - d.StopLoss) / d.EntryPrice * 100
+			rewardPercent = (d.TakeProfit - d.EntryPrice) / d.EntryPrice * 100
 			if riskPercent > 0 {
 				riskRewardRatio = rewardPercent / riskPercent
 			}
 		} else {
-			riskPercent = (d.StopLoss - entryPrice) / entryPrice * 100
-			rewardPercent = (entryPrice - d.TakeProfit) / entryPrice * 100
+			riskPercent = (d.StopLoss - d.EntryPrice) / d.EntryPrice * 100
+			rewardPercent = (d.EntryPrice - d.TakeProfit) / d.EntryPrice * 100
 			if riskPercent > 0 {
 				riskRewardRatio = rewardPercent / riskPercent
 			}
 		}
 
-		// 硬约束：风险回报比必须≥3.0
-		if riskRewardRatio < 3.0 {
-			return fmt.Errorf("风险回报比过低(%.2f:1)，必须≥3.0:1 [风险:%.2f%% 收益:%.2f%%] [止损:%.2f 止盈:%.2f]",
-				riskRewardRatio, riskPercent, rewardPercent, d.StopLoss, d.TakeProfit)
+		// 硬约束：风险回报比必须≥2.0
+		if riskRewardRatio < 2.0 {
+			return fmt.Errorf("风险回报比过低(%.2f:1)，必须≥2.0:1 [入场:%.2f 止损:%.2f 止盈:%.2f] [风险:%.2f%% 收益:%.2f%%]",
+				riskRewardRatio, d.EntryPrice, d.StopLoss, d.TakeProfit, riskPercent, rewardPercent)
+		}
+	}
+
+	// update_loss_profit 操作必须提供止损和止盈价格
+	if d.Action == "update_loss_profit" {
+		if d.StopLoss <= 0 || d.TakeProfit <= 0 {
+			return fmt.Errorf("更新止盈止损时，止损和止盈价格必须大于0")
+		}
+		if strings.TrimSpace(d.Reasoning) == "" {
+			return fmt.Errorf("更新止盈止损时必须提供reasoning说明原因")
 		}
 	}
 
