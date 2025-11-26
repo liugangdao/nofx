@@ -3,11 +3,12 @@ package market
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Data 市场数据结构
@@ -38,18 +39,18 @@ type TimeframeData struct {
 	RSI             float64            // RSI指标
 	MarketStructure string             // 市场结构: "HH", "HL", "LH", "LL", "RANGING"
 	POC             float64            // Point of Control
-	BBUpper         float64            // 布林带上轨 (仅1h)
-	BBMiddle        float64            // 布林带中轨 (仅1h)
-	BBLower         float64            // 布林带下轨 (仅1h)
-	ATR             float64            // ATR指标 (仅1h)
+	ATR             float64            // ATR指标
+	ADX             float64            // 平均趋向指数
+	BBWidth         float64            // 布林带带宽
+	RVOL            float64            // 相对成交量
 	VolumeProfile   *VolumeProfileData // 成交量分布
 	StructureDetail *MarketStructure   // 详细市场结构
+	RSIDivergence   *RSIDivergence     // RSI背离信号
 
 	// 时间序列数据 (最近10个数据点，从旧到新)
-	PriceSeries  []float64 // 价格序列
-	EMA20Series  []float64 // EMA20序列
-	RSISeries    []float64 // RSI序列
-	VolumeSeries []float64 // 成交量序列
+	PriceSeries []float64 // 价格序列
+	EMA20Series []float64 // EMA20序列
+	RSISeries   []float64 // RSI序列
 }
 
 // VolumeProfileData 成交量分布数据
@@ -75,6 +76,17 @@ type MarketStructure struct {
 	SwingLows   []SwingPoint // 摆动低点列表
 	LastPattern string       // 最近的结构模式: "HH", "HL", "LH", "LL"
 	Description string       // 市场结构描述
+}
+
+// RSIDivergence RSI背离信号
+type RSIDivergence struct {
+	Type        string  // "BULLISH" (看涨背离), "BEARISH" (看跌背离), "NONE" (无背离)
+	Strength    string  // "REGULAR" (常规背离), "HIDDEN" (隐藏背离)
+	Description string  // 背离描述
+	PricePoint1 float64 // 价格点1
+	PricePoint2 float64 // 价格点2
+	RSIPoint1   float64 // RSI点1
+	RSIPoint2   float64 // RSI点2
 }
 
 // Kline K线数据
@@ -126,8 +138,8 @@ func Get(symbol string, interval int) (*Data, error) {
 
 	// 计算各时间周期数据
 	timeframe12h := calculateTimeframeData(klines12h, "12h", currentPrice, false)
-	timeframe4h := calculateTimeframeData(klines4h, "4h", currentPrice, true) // 4h包含BB和ATR
-	timeframe1h := calculateTimeframeData(klines1h, "1h", currentPrice, true) // 1h包含BB和ATR
+	timeframe4h := calculateTimeframeData(klines4h, "4h", currentPrice, true)
+	timeframe1h := calculateTimeframeData(klines1h, "1h", currentPrice, true)
 
 	return &Data{
 		Symbol:              symbol,
@@ -141,38 +153,75 @@ func Get(symbol string, interval int) (*Data, error) {
 	}, nil
 }
 
-// getKlines 从Binance获取K线数据
+// getKlines 从Hyperliquid获取K线数据
 func getKlines(symbol, interval string, limit int) ([]Kline, error) {
-	url := fmt.Sprintf("https://fapi.binance.com/fapi/v1/klines?symbol=%s&interval=%s&limit=%d",
-		symbol, interval, limit)
+	// 转换symbol格式: BTCUSDT -> BTC
+	coin := convertSymbolToHyperliquid(symbol)
 
-	resp, err := http.Get(url)
+	// 转换时间间隔格式: 1h -> 1h, 4h -> 4h, 12h -> 12h
+	// Hyperliquid支持: 1m, 15m, 1h, 4h, 1d
+	hlInterval := interval
+
+	// 计算开始时间 (毫秒)
+	endTime := time.Now().Unix() * 1000
+	var intervalMs int64
+	switch interval {
+	case "1h":
+		intervalMs = 3600 * 1000
+	case "4h":
+		intervalMs = 4 * 3600 * 1000
+	case "12h":
+		intervalMs = 12 * 3600 * 1000
+	default:
+		intervalMs = 3600 * 1000
+	}
+	startTime := endTime - int64(limit)*intervalMs
+
+	// 构建请求
+	url := "https://api.hyperliquid.xyz/info"
+	requestBody := map[string]any{
+		"type": "candleSnapshot",
+		"req": map[string]any{
+			"coin":      coin,
+			"interval":  hlInterval,
+			"startTime": startTime,
+			"endTime":   endTime,
+		},
+	}
+
+	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("构建请求失败: %w", err)
+	}
+
+	resp, err := http.Post(url, "application/json", strings.NewReader(string(jsonData)))
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("读取响应失败: %w", err)
 	}
 
-	var rawData [][]interface{}
+	// Hyperliquid返回格式: [{"t": timestamp_ms, "T": close_timestamp_ms, "o": "open", "h": "high", "l": "low", "c": "close", "v": "volume", "n": num_trades}]
+	var rawData []map[string]any
 	if err := json.Unmarshal(body, &rawData); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("解析响应失败: %w", err)
 	}
 
-	klines := make([]Kline, len(rawData))
-	for i, item := range rawData {
-		openTime := int64(item[0].(float64))
-		open, _ := parseFloat(item[1])
-		high, _ := parseFloat(item[2])
-		low, _ := parseFloat(item[3])
-		close, _ := parseFloat(item[4])
-		volume, _ := parseFloat(item[5])
-		closeTime := int64(item[6].(float64))
+	klines := make([]Kline, 0, len(rawData))
+	for _, item := range rawData {
+		openTime := int64(item["t"].(float64))
+		closeTime := int64(item["T"].(float64))
+		open, _ := parseFloat(item["o"])
+		high, _ := parseFloat(item["h"])
+		low, _ := parseFloat(item["l"])
+		close, _ := parseFloat(item["c"])
+		volume, _ := parseFloat(item["v"])
 
-		klines[i] = Kline{
+		klines = append(klines, Kline{
 			OpenTime:  openTime,
 			Open:      open,
 			High:      high,
@@ -180,10 +229,19 @@ func getKlines(symbol, interval string, limit int) ([]Kline, error) {
 			Close:     close,
 			Volume:    volume,
 			CloseTime: closeTime,
-		}
+		})
 	}
 
 	return klines, nil
+}
+
+// convertSymbolToHyperliquid 将标准symbol转换为Hyperliquid格式
+// 例如: "BTCUSDT" -> "BTC"
+func convertSymbolToHyperliquid(symbol string) string {
+	if len(symbol) > 4 && symbol[len(symbol)-4:] == "USDT" {
+		return symbol[:len(symbol)-4]
+	}
+	return symbol
 }
 
 // calculateEMA 计算EMA
@@ -250,35 +308,6 @@ func calculateRSI(klines []Kline, period int) float64 {
 	rsi := 100 - (100 / (1 + rs))
 
 	return rsi
-}
-
-// calculateBollingerBands 计算布林带
-// 返回值: upper, middle, lower
-func calculateBollingerBands(klines []Kline, period int, stdDev float64) (float64, float64, float64) {
-	if len(klines) < period {
-		return 0, 0, 0
-	}
-
-	// 计算中轨 (SMA)
-	sum := 0.0
-	for i := len(klines) - period; i < len(klines); i++ {
-		sum += klines[i].Close
-	}
-	middle := sum / float64(period)
-
-	// 计算标准差
-	variance := 0.0
-	for i := len(klines) - period; i < len(klines); i++ {
-		diff := klines[i].Close - middle
-		variance += diff * diff
-	}
-	stdDeviation := math.Sqrt(variance / float64(period))
-
-	// 计算上轨和下轨
-	upper := middle + (stdDev * stdDeviation)
-	lower := middle - (stdDev * stdDeviation)
-
-	return upper, middle, lower
 }
 
 // calculateVolumeProfile 计算成交量分布
@@ -565,15 +594,144 @@ func calculateATR(klines []Kline, period int) float64 {
 	return atr
 }
 
+// calculateADX 计算ADX (平均趋向指数)
+func calculateADX(klines []Kline, period int) float64 {
+	if len(klines) <= period*2 {
+		return 0
+	}
+
+	// 计算+DM和-DM
+	plusDM := make([]float64, len(klines))
+	minusDM := make([]float64, len(klines))
+	tr := make([]float64, len(klines))
+
+	for i := 1; i < len(klines); i++ {
+		highDiff := klines[i].High - klines[i-1].High
+		lowDiff := klines[i-1].Low - klines[i].Low
+
+		if highDiff > lowDiff && highDiff > 0 {
+			plusDM[i] = highDiff
+		}
+		if lowDiff > highDiff && lowDiff > 0 {
+			minusDM[i] = lowDiff
+		}
+
+		high := klines[i].High
+		low := klines[i].Low
+		prevClose := klines[i-1].Close
+		tr1 := high - low
+		tr2 := math.Abs(high - prevClose)
+		tr3 := math.Abs(low - prevClose)
+		tr[i] = math.Max(tr1, math.Max(tr2, tr3))
+	}
+
+	// 计算平滑的+DI和-DI
+	smoothPlusDM := 0.0
+	smoothMinusDM := 0.0
+	smoothTR := 0.0
+
+	for i := 1; i <= period; i++ {
+		smoothPlusDM += plusDM[i]
+		smoothMinusDM += minusDM[i]
+		smoothTR += tr[i]
+	}
+
+	plusDI := make([]float64, len(klines))
+	minusDI := make([]float64, len(klines))
+	dx := make([]float64, len(klines))
+
+	for i := period; i < len(klines); i++ {
+		if i > period {
+			smoothPlusDM = smoothPlusDM - smoothPlusDM/float64(period) + plusDM[i]
+			smoothMinusDM = smoothMinusDM - smoothMinusDM/float64(period) + minusDM[i]
+			smoothTR = smoothTR - smoothTR/float64(period) + tr[i]
+		}
+
+		if smoothTR != 0 {
+			plusDI[i] = 100 * smoothPlusDM / smoothTR
+			minusDI[i] = 100 * smoothMinusDM / smoothTR
+		}
+
+		diSum := plusDI[i] + minusDI[i]
+		if diSum != 0 {
+			dx[i] = 100 * math.Abs(plusDI[i]-minusDI[i]) / diSum
+		}
+	}
+
+	// 计算ADX (DX的平滑移动平均)
+	adx := 0.0
+	for i := period; i < period*2 && i < len(klines); i++ {
+		adx += dx[i]
+	}
+	adx = adx / float64(period)
+
+	for i := period * 2; i < len(klines); i++ {
+		adx = (adx*float64(period-1) + dx[i]) / float64(period)
+	}
+
+	return adx
+}
+
+// calculateBBWidth 计算布林带带宽
+func calculateBBWidth(klines []Kline, period int, stdDev float64) float64 {
+	if len(klines) < period {
+		return 0
+	}
+
+	// 计算SMA
+	sum := 0.0
+	for i := len(klines) - period; i < len(klines); i++ {
+		sum += klines[i].Close
+	}
+	sma := sum / float64(period)
+
+	// 计算标准差
+	variance := 0.0
+	for i := len(klines) - period; i < len(klines); i++ {
+		diff := klines[i].Close - sma
+		variance += diff * diff
+	}
+	stdDeviation := math.Sqrt(variance / float64(period))
+
+	// 布林带带宽 = (上轨 - 下轨) / 中轨
+	upper := sma + (stdDev * stdDeviation)
+	lower := sma - (stdDev * stdDeviation)
+
+	if sma != 0 {
+		return (upper - lower) / sma
+	}
+	return 0
+}
+
+// calculateRVOL 计算相对成交量
+func calculateRVOL(klines []Kline, period int) float64 {
+	if len(klines) < period+1 {
+		return 0
+	}
+
+	// 计算过去period根K线的平均成交量
+	sum := 0.0
+	for i := len(klines) - period - 1; i < len(klines)-1; i++ {
+		sum += klines[i].Volume
+	}
+	avgVolume := sum / float64(period)
+
+	// 当前K线成交量 / 平均成交量
+	currentVolume := klines[len(klines)-1].Volume
+	if avgVolume != 0 {
+		return currentVolume / avgVolume
+	}
+	return 0
+}
+
 // calculateTimeframeData 计算时间周期数据
-func calculateTimeframeData(klines []Kline, timeframe string, currentPrice float64, includeBBAndATR bool) *TimeframeData {
+func calculateTimeframeData(klines []Kline, timeframe string, currentPrice float64, includeATR bool) *TimeframeData {
 	data := &TimeframeData{
-		Timeframe:    timeframe,
-		Price:        currentPrice,
-		PriceSeries:  make([]float64, 0, 10),
-		EMA20Series:  make([]float64, 0, 10),
-		RSISeries:    make([]float64, 0, 10),
-		VolumeSeries: make([]float64, 0, 10),
+		Timeframe:   timeframe,
+		Price:       currentPrice,
+		PriceSeries: make([]float64, 0, 10),
+		EMA20Series: make([]float64, 0, 10),
+		RSISeries:   make([]float64, 0, 10),
 	}
 
 	// 计算EMA
@@ -599,14 +757,22 @@ func calculateTimeframeData(klines []Kline, timeframe string, currentPrice float
 		}
 	}
 
-	// 仅1小时周期计算布林带和ATR
-	if includeBBAndATR {
-		upper, middle, lower := calculateBollingerBands(klines, 20, 2.0)
-		data.BBUpper = upper
-		data.BBMiddle = middle
-		data.BBLower = lower
+	// 计算RSI背离 (用于震荡区间交易)
+	data.RSIDivergence = calculateRSIDivergence(klines, 14, 10)
+
+	// 计算ATR (波动率指标)
+	if includeATR {
 		data.ATR = calculateATR(klines, 14)
 	}
+
+	// 计算ADX (平均趋向指数)
+	data.ADX = calculateADX(klines, 14)
+
+	// 计算布林带带宽
+	data.BBWidth = calculateBBWidth(klines, 20, 2.0)
+
+	// 计算相对成交量 (当前成交量 / 过去20根K线平均成交量)
+	data.RVOL = calculateRVOL(klines, 20)
 
 	// 计算时间序列数据 (最近10个数据点)
 	seriesStart := len(klines) - 10
@@ -617,9 +783,6 @@ func calculateTimeframeData(klines []Kline, timeframe string, currentPrice float
 	for i := seriesStart; i < len(klines); i++ {
 		// 价格序列
 		data.PriceSeries = append(data.PriceSeries, klines[i].Close)
-
-		// 成交量序列
-		data.VolumeSeries = append(data.VolumeSeries, klines[i].Volume)
 
 		// EMA20序列 (需要至少20个数据点)
 		if i >= 19 {
@@ -639,68 +802,172 @@ func calculateTimeframeData(klines []Kline, timeframe string, currentPrice float
 
 // getOpenInterestData 获取OI数据
 func getOpenInterestData(symbol string) (*OIData, error) {
-	url := fmt.Sprintf("https://fapi.binance.com/fapi/v1/openInterest?symbol=%s", symbol)
+	coin := convertSymbolToHyperliquid(symbol)
 
-	resp, err := http.Get(url)
+	// 构建请求获取meta信息
+	url := "https://api.hyperliquid.xyz/info"
+	requestBody := map[string]any{
+		"type": "metaAndAssetCtxs",
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("构建请求失败: %w", err)
+	}
+
+	resp, err := http.Post(url, "application/json", strings.NewReader(string(jsonData)))
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
-	var result struct {
-		OpenInterest string `json:"openInterest"`
-		Symbol       string `json:"symbol"`
-		Time         int64  `json:"time"`
-	}
-
+	// 解析响应 - Hyperliquid返回 [meta, assetCtxs]
+	var result []any
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, err
 	}
 
-	oi, _ := strconv.ParseFloat(result.OpenInterest, 64)
+	// 查找对应币种的OI数据
+	if len(result) >= 2 {
+		// 解析meta获取币种列表
+		metaMap, ok := result[0].(map[string]any)
+		if !ok {
+			return &OIData{Latest: 0, Average: 0}, nil
+		}
 
+		universe, ok := metaMap["universe"].([]any)
+		if !ok {
+			return &OIData{Latest: 0, Average: 0}, nil
+		}
+
+		// 查找币种索引
+		coinIndex := -1
+		for i, asset := range universe {
+			assetMap, ok := asset.(map[string]any)
+			if !ok {
+				continue
+			}
+			if assetMap["name"] == coin {
+				coinIndex = i
+				break
+			}
+		}
+
+		if coinIndex == -1 {
+			return &OIData{Latest: 0, Average: 0}, nil
+		}
+
+		// 获取对应的assetCtx
+		assetCtxs, ok := result[1].([]any)
+		if !ok || coinIndex >= len(assetCtxs) {
+			return &OIData{Latest: 0, Average: 0}, nil
+		}
+
+		ctxMap, ok := assetCtxs[coinIndex].(map[string]any)
+		if !ok {
+			return &OIData{Latest: 0, Average: 0}, nil
+		}
+
+		oiStr, _ := ctxMap["openInterest"].(string)
+		oi, _ := strconv.ParseFloat(oiStr, 64)
+
+		return &OIData{
+			Latest:  oi,
+			Average: oi * 0.999, // 近似平均值
+		}, nil
+	}
+
+	// 如果没找到，返回默认值
 	return &OIData{
-		Latest:  oi,
-		Average: oi * 0.999, // 近似平均值
+		Latest:  0,
+		Average: 0,
 	}, nil
 }
 
 // getFundingRate 获取资金费率
 func getFundingRate(symbol string) (float64, error) {
-	url := fmt.Sprintf("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=%s", symbol)
+	coin := convertSymbolToHyperliquid(symbol)
 
-	resp, err := http.Get(url)
+	// 构建请求获取meta信息
+	url := "https://api.hyperliquid.xyz/info"
+	requestBody := map[string]any{
+		"type": "metaAndAssetCtxs",
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return 0, fmt.Errorf("构建请求失败: %w", err)
+	}
+
+	resp, err := http.Post(url, "application/json", strings.NewReader(string(jsonData)))
 	if err != nil {
 		return 0, err
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return 0, err
 	}
 
-	var result struct {
-		Symbol          string `json:"symbol"`
-		MarkPrice       string `json:"markPrice"`
-		IndexPrice      string `json:"indexPrice"`
-		LastFundingRate string `json:"lastFundingRate"`
-		NextFundingTime int64  `json:"nextFundingTime"`
-		InterestRate    string `json:"interestRate"`
-		Time            int64  `json:"time"`
-	}
-
+	// 解析响应 - Hyperliquid返回 [meta, assetCtxs]
+	var result []any
 	if err := json.Unmarshal(body, &result); err != nil {
 		return 0, err
 	}
 
-	rate, _ := strconv.ParseFloat(result.LastFundingRate, 64)
-	return rate, nil
+	// 查找对应币种的funding rate
+	if len(result) >= 2 {
+		// 解析meta获取币种列表
+		metaMap, ok := result[0].(map[string]any)
+		if !ok {
+			return 0, nil
+		}
+
+		universe, ok := metaMap["universe"].([]any)
+		if !ok {
+			return 0, nil
+		}
+
+		// 查找币种索引
+		coinIndex := -1
+		for i, asset := range universe {
+			assetMap, ok := asset.(map[string]any)
+			if !ok {
+				continue
+			}
+			if assetMap["name"] == coin {
+				coinIndex = i
+				break
+			}
+		}
+
+		if coinIndex == -1 {
+			return 0, nil
+		}
+
+		// 获取对应的assetCtx
+		assetCtxs, ok := result[1].([]any)
+		if !ok || coinIndex >= len(assetCtxs) {
+			return 0, nil
+		}
+
+		ctxMap, ok := assetCtxs[coinIndex].(map[string]any)
+		if !ok {
+			return 0, nil
+		}
+
+		fundingStr, _ := ctxMap["funding"].(string)
+		rate, _ := strconv.ParseFloat(fundingStr, 64)
+		return rate, nil
+	}
+
+	return 0, nil
 }
 
 // Normalize 标准化symbol,确保是USDT交易对
@@ -712,8 +979,106 @@ func Normalize(symbol string) string {
 	return symbol + "USDT"
 }
 
+// calculateRSIDivergence 计算RSI背离 (使用TradingView风格的简单方法)
+func calculateRSIDivergence(klines []Kline, rsiPeriod int, lookback int) *RSIDivergence {
+	if len(klines) < rsiPeriod+lookback {
+		return &RSIDivergence{
+			Type:        "NONE",
+			Description: "数据不足以检测背离",
+		}
+	}
+
+	// 计算当前RSI
+	currentRSI := calculateRSI(klines, rsiPeriod)
+	currentPrice := klines[len(klines)-1].Close
+
+	// 获取lookback周期内的最高价和最低价
+	highestPrice := klines[len(klines)-1].High
+	lowestPrice := klines[len(klines)-1].Low
+	highestRSI := currentRSI
+	lowestRSI := currentRSI
+
+	// 计算lookback周期内的历史最高/最低价格和RSI
+	for i := len(klines) - lookback; i < len(klines); i++ {
+		if klines[i].High > highestPrice {
+			highestPrice = klines[i].High
+		}
+		if klines[i].Low < lowestPrice {
+			lowestPrice = klines[i].Low
+		}
+
+		rsi := calculateRSI(klines[:i+1], rsiPeriod)
+		if rsi > highestRSI {
+			highestRSI = rsi
+		}
+		if rsi < lowestRSI {
+			lowestRSI = rsi
+		}
+	}
+
+	// 获取lookback周期前的历史最高/最低价格和RSI
+	prevHighestPrice := klines[len(klines)-lookback-1].High
+	prevLowestPrice := klines[len(klines)-lookback-1].Low
+	prevHighestRSI := calculateRSI(klines[:len(klines)-lookback], rsiPeriod)
+	prevLowestRSI := prevHighestRSI
+
+	for i := len(klines) - lookback*2; i < len(klines)-lookback && i >= 0; i++ {
+		if klines[i].High > prevHighestPrice {
+			prevHighestPrice = klines[i].High
+		}
+		if klines[i].Low < prevLowestPrice {
+			prevLowestPrice = klines[i].Low
+		}
+
+		rsi := calculateRSI(klines[:i+1], rsiPeriod)
+		if rsi > prevHighestRSI {
+			prevHighestRSI = rsi
+		}
+		if rsi < prevLowestRSI {
+			prevLowestRSI = rsi
+		}
+	}
+
+	// 检测看跌背离: 价格创新高但RSI未创新高
+	priceHigherHigh := currentPrice == highestPrice && highestPrice > prevHighestPrice
+	rsiHigherHigh := currentRSI == highestRSI && highestRSI > prevHighestRSI
+
+	if priceHigherHigh && !rsiHigherHigh {
+		return &RSIDivergence{
+			Type:        "BEARISH",
+			Strength:    "REGULAR",
+			Description: fmt.Sprintf("看跌背离: 价格创新高(%.2f > %.2f)，RSI未创新高(%.2f vs %.2f)", highestPrice, prevHighestPrice, currentRSI, prevHighestRSI),
+			PricePoint1: prevHighestPrice,
+			PricePoint2: highestPrice,
+			RSIPoint1:   prevHighestRSI,
+			RSIPoint2:   currentRSI,
+		}
+	}
+
+	// 检测看涨背离: 价格创新低但RSI未创新低
+	priceLowerLow := currentPrice == lowestPrice && lowestPrice < prevLowestPrice
+	rsiLowerLow := currentRSI == lowestRSI && lowestRSI < prevLowestRSI
+
+	if priceLowerLow && !rsiLowerLow {
+		return &RSIDivergence{
+			Type:        "BULLISH",
+			Strength:    "REGULAR",
+			Description: fmt.Sprintf("看涨背离: 价格创新低(%.2f < %.2f)，RSI未创新低(%.2f vs %.2f)", lowestPrice, prevLowestPrice, currentRSI, prevLowestRSI),
+			PricePoint1: prevLowestPrice,
+			PricePoint2: lowestPrice,
+			RSIPoint1:   prevLowestRSI,
+			RSIPoint2:   currentRSI,
+		}
+	}
+
+	return &RSIDivergence{
+		Type:        "NONE",
+		Description: "未检测到背离信号",
+	}
+}
+
 // parseFloat 解析float值
-func parseFloat(v interface{}) (float64, error) {
+func parseFloat(v any) (float64, error) {
 	switch val := v.(type) {
 	case string:
 		return strconv.ParseFloat(val, 64)

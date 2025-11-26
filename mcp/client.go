@@ -40,7 +40,7 @@ func New() *Client {
 	var defaultClient = Client{
 		Provider: ProviderDeepSeek,
 		BaseURL:  "https://api.deepseek.com/v1",
-		Model:    "deepseek-reasoner",
+		Model:    "deepseek-chat",
 		Timeout:  120 * time.Second, // 增加到120秒，因为AI需要分析大量数据
 	}
 	return &defaultClient
@@ -51,7 +51,7 @@ func (cfg *Client) SetDeepSeekAPIKey(apiKey string) {
 	cfg.Provider = ProviderDeepSeek
 	cfg.APIKey = apiKey
 	cfg.BaseURL = "https://api.deepseek.com/v1"
-	cfg.Model = "deepseek-reasoner"
+	cfg.Model = "deepseek-chat"
 }
 
 // SetQwenAPIKey 设置阿里云Qwen API密钥

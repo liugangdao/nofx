@@ -47,10 +47,16 @@ func formatTimeframeData(sb *strings.Builder, tf *TimeframeData, currentPrice fl
 	sb.WriteString(fmt.Sprintf("Market Structure: %s\n", tf.MarketStructure))
 	sb.WriteString(fmt.Sprintf("POC: %.2f\n", tf.POC))
 
-	// 1小时周期额外显示布林带和ATR
-	if tf.BBUpper > 0 {
-		sb.WriteString(fmt.Sprintf("Bollinger Bands: Upper=%.2f, Middle=%.2f, Lower=%.2f\n", tf.BBUpper, tf.BBMiddle, tf.BBLower))
-		sb.WriteString(fmt.Sprintf("ATR: %.2f\n", tf.ATR))
+	// 显示波动率和趋势指标
+	if tf.ATR > 0 {
+		sb.WriteString(fmt.Sprintf("ATR: %.2f, ADX: %.2f, BB Width: %.4f, RVOL: %.2f\n", tf.ATR, tf.ADX, tf.BBWidth, tf.RVOL))
+	} else {
+		sb.WriteString(fmt.Sprintf("ADX: %.2f, BB Width: %.4f, RVOL: %.2f\n", tf.ADX, tf.BBWidth, tf.RVOL))
+	}
+
+	// 显示RSI背离信号
+	if tf.RSIDivergence != nil {
+		sb.WriteString(fmt.Sprintf("RSI Divergence: [%s-%s] %s\n", tf.RSIDivergence.Type, tf.RSIDivergence.Strength, tf.RSIDivergence.Description))
 	}
 
 	// 显示时间序列数据 (最近10个数据点，从旧到新)
@@ -62,9 +68,6 @@ func formatTimeframeData(sb *strings.Builder, tf *TimeframeData, currentPrice fl
 	}
 	if len(tf.RSISeries) > 0 {
 		sb.WriteString(fmt.Sprintf("RSI Series: %s\n", formatFloatSlice(tf.RSISeries)))
-	}
-	if len(tf.VolumeSeries) > 0 {
-		sb.WriteString(fmt.Sprintf("Volume Series: %s\n", formatFloatSlice(tf.VolumeSeries)))
 	}
 
 	// 显示市场结构详情
