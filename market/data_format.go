@@ -55,8 +55,18 @@ func formatTimeframeData(sb *strings.Builder, tf *TimeframeData, currentPrice fl
 	}
 
 	// 显示RSI背离信号
-	if tf.RSIDivergence != nil {
-		sb.WriteString(fmt.Sprintf("RSI Divergence: [%s-%s] %s\n", tf.RSIDivergence.Type, tf.RSIDivergence.Strength, tf.RSIDivergence.Description))
+	if tf.RSIDivergence != nil && tf.RSIDivergence.Type != "NONE" {
+		validityInfo := ""
+		if tf.RSIDivergence.ValidityLeft > 0 {
+			validityInfo = fmt.Sprintf(" (剩余有效%d周期)", tf.RSIDivergence.ValidityLeft)
+		}
+		sb.WriteString(fmt.Sprintf("RSI Divergence: [%s-%s] %s%s\n",
+			tf.RSIDivergence.Type, tf.RSIDivergence.Strength, tf.RSIDivergence.Description, validityInfo))
+	}
+
+	// 显示K线反转信号
+	if tf.CandleReversal != nil {
+		formatCandleReversal(sb, tf.CandleReversal)
 	}
 
 	// 显示时间序列数据 (最近10个数据点，从旧到新)
@@ -117,4 +127,28 @@ func formatFloatSlice(values []float64) string {
 		strValues[i] = fmt.Sprintf("%.2f", v)
 	}
 	return "[" + strings.Join(strValues, ", ") + "]"
+}
+
+// formatCandleReversal 格式化K线反转信号
+func formatCandleReversal(sb *strings.Builder, cr *CandleReversal) {
+	hasSignal := false
+
+	// 单K线形态
+	if cr.SingleCandle != nil && cr.SingleCandle.Type != "NONE" {
+		sb.WriteString(fmt.Sprintf("Single Candle Pattern: [%s] %s (Strength: %.2f)\n",
+			cr.SingleCandle.Type, cr.SingleCandle.Description, cr.SingleCandle.Strength))
+		hasSignal = true
+	}
+
+	// 双K线形态
+	if cr.DoubleCandle != nil && cr.DoubleCandle.Type != "NONE" {
+		sb.WriteString(fmt.Sprintf("Double Candle Pattern: [%s] %s (Strength: %.2f)\n",
+			cr.DoubleCandle.Type, cr.DoubleCandle.Description, cr.DoubleCandle.Strength))
+		hasSignal = true
+	}
+
+	// 如果没有检测到任何反转信号，显示提示
+	if !hasSignal {
+		sb.WriteString("Candle Reversal: No reversal patterns detected\n")
+	}
 }

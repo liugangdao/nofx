@@ -46,6 +46,7 @@ type TimeframeData struct {
 	VolumeProfile   *VolumeProfileData // 成交量分布
 	StructureDetail *MarketStructure   // 详细市场结构
 	RSIDivergence   *RSIDivergence     // RSI背离信号
+	CandleReversal  *CandleReversal    // K线反转信号
 
 	// 时间序列数据 (最近10个数据点，从旧到新)
 	PriceSeries []float64 // 价格序列
@@ -80,13 +81,36 @@ type MarketStructure struct {
 
 // RSIDivergence RSI背离信号
 type RSIDivergence struct {
-	Type        string  // "BULLISH" (看涨背离), "BEARISH" (看跌背离), "NONE" (无背离)
-	Strength    string  // "REGULAR" (常规背离), "HIDDEN" (隐藏背离)
-	Description string  // 背离描述
-	PricePoint1 float64 // 价格点1
-	PricePoint2 float64 // 价格点2
-	RSIPoint1   float64 // RSI点1
-	RSIPoint2   float64 // RSI点2
+	Type          string  // "BULLISH" (看涨背离), "BEARISH" (看跌背离), "NONE" (无背离)
+	Strength      string  // "REGULAR" (常规背离), "HIDDEN" (隐藏背离)
+	Description   string  // 背离描述
+	PeriodsAgo    int     // 背离出现在第几个周期前 (0=当前周期)
+	ValidityLeft  int     // 剩余有效周期数
+	PricePoint1   float64 // 价格点1
+	PricePoint2   float64 // 价格点2
+	RSIPoint1     float64 // RSI点1
+	RSIPoint2     float64 // RSI点2
+	DetectedIndex int     // 检测到背离的K线索引
+}
+
+// CandleReversal K线反转信号
+type CandleReversal struct {
+	SingleCandle *SingleCandlePattern // 单K线反转形态
+	DoubleCandle *DoubleCandlePattern // 双K线反转形态
+}
+
+// SingleCandlePattern 单K线反转形态
+type SingleCandlePattern struct {
+	Type        string  // "BULLISH_HAMMER" (看涨锤子线), "BEARISH_SHOOTING_STAR" (看跌流星线), "BULLISH_ENGULFING" (看涨吞没), "BEARISH_ENGULFING" (看跌吞没), "NONE"
+	Description string  // 形态描述
+	Strength    float64 // 信号强度 (0-1)
+}
+
+// DoubleCandlePattern 双K线反转形态
+type DoubleCandlePattern struct {
+	Type        string  // "BULLISH_ENGULFING" (看涨吞没), "BEARISH_ENGULFING" (看跌吞没), "BULLISH_PIERCING" (看涨刺透), "BEARISH_DARK_CLOUD" (看跌乌云盖顶), "NONE"
+	Description string  // 形态描述
+	Strength    float64 // 信号强度 (0-1)
 }
 
 // Kline K线数据
@@ -757,8 +781,13 @@ func calculateTimeframeData(klines []Kline, timeframe string, currentPrice float
 		}
 	}
 
-	// 计算RSI背离 (用于震荡区间交易)
-	data.RSIDivergence = calculateRSIDivergence(klines, 14, 10)
+	// 计算RSI背离 (用于震荡区间交易) - 检测最近5个周期内的背离
+	data.RSIDivergence = calculateRSIDivergence(klines, 14, 10, 5)
+
+	// 计算K线反转信号 (仅对1h和4h周期)
+	if timeframe == "1h" || timeframe == "4h" {
+		data.CandleReversal = detectCandleReversal(klines)
+	}
 
 	// 计算ATR (波动率指标)
 	if includeATR {
@@ -979,95 +1008,129 @@ func Normalize(symbol string) string {
 	return symbol + "USDT"
 }
 
-// calculateRSIDivergence 计算RSI背离 (使用TradingView风格的简单方法)
-func calculateRSIDivergence(klines []Kline, rsiPeriod int, lookback int) *RSIDivergence {
-	if len(klines) < rsiPeriod+lookback {
+// calculateRSIDivergence 计算RSI背离 (检测最近validPeriods个周期内的背离)
+// 优化版本：预先计算所有需要的RSI值，避免重复计算
+func calculateRSIDivergence(klines []Kline, rsiPeriod int, lookback int, validPeriods int) *RSIDivergence {
+	if len(klines) < rsiPeriod+lookback*2 {
 		return &RSIDivergence{
 			Type:        "NONE",
 			Description: "数据不足以检测背离",
 		}
 	}
 
-	// 计算当前RSI
-	currentRSI := calculateRSI(klines, rsiPeriod)
-	currentPrice := klines[len(klines)-1].Close
-
-	// 获取lookback周期内的最高价和最低价
-	highestPrice := klines[len(klines)-1].High
-	lowestPrice := klines[len(klines)-1].Low
-	highestRSI := currentRSI
-	lowestRSI := currentRSI
-
-	// 计算lookback周期内的历史最高/最低价格和RSI
-	for i := len(klines) - lookback; i < len(klines); i++ {
-		if klines[i].High > highestPrice {
-			highestPrice = klines[i].High
-		}
-		if klines[i].Low < lowestPrice {
-			lowestPrice = klines[i].Low
-		}
-
-		rsi := calculateRSI(klines[:i+1], rsiPeriod)
-		if rsi > highestRSI {
-			highestRSI = rsi
-		}
-		if rsi < lowestRSI {
-			lowestRSI = rsi
-		}
+	// 预先计算所有需要的RSI值（只计算一次）
+	rsiCache := make([]float64, len(klines))
+	for i := rsiPeriod; i < len(klines); i++ {
+		rsiCache[i] = calculateRSI(klines[:i+1], rsiPeriod)
 	}
 
-	// 获取lookback周期前的历史最高/最低价格和RSI
-	prevHighestPrice := klines[len(klines)-lookback-1].High
-	prevLowestPrice := klines[len(klines)-lookback-1].Low
-	prevHighestRSI := calculateRSI(klines[:len(klines)-lookback], rsiPeriod)
-	prevLowestRSI := prevHighestRSI
-
-	for i := len(klines) - lookback*2; i < len(klines)-lookback && i >= 0; i++ {
-		if klines[i].High > prevHighestPrice {
-			prevHighestPrice = klines[i].High
-		}
-		if klines[i].Low < prevLowestPrice {
-			prevLowestPrice = klines[i].Low
+	// 从最近的K线开始，向前检测validPeriods个周期
+	for periodsAgo := 0; periodsAgo < validPeriods && periodsAgo < len(klines)-rsiPeriod-lookback*2; periodsAgo++ {
+		// 计算检测点的索引
+		checkIndex := len(klines) - 1 - periodsAgo
+		if checkIndex < rsiPeriod+lookback*2 {
+			break
 		}
 
-		rsi := calculateRSI(klines[:i+1], rsiPeriod)
-		if rsi > prevHighestRSI {
-			prevHighestRSI = rsi
+		// 计算当前点的RSI和价格
+		currentRSI := rsiCache[checkIndex]
+		currentPrice := klines[checkIndex].Close
+
+		// 获取lookback周期内的最高价和最低价
+		highestPrice := klines[checkIndex].High
+		lowestPrice := klines[checkIndex].Low
+		highestRSI := currentRSI
+		lowestRSI := currentRSI
+
+		// 计算lookback周期内的历史最高/最低价格和RSI（使用缓存的RSI）
+		for i := checkIndex - lookback + 1; i <= checkIndex; i++ {
+			if klines[i].High > highestPrice {
+				highestPrice = klines[i].High
+			}
+			if klines[i].Low < lowestPrice {
+				lowestPrice = klines[i].Low
+			}
+
+			if rsiCache[i] > highestRSI {
+				highestRSI = rsiCache[i]
+			}
+			if rsiCache[i] < lowestRSI {
+				lowestRSI = rsiCache[i]
+			}
 		}
-		if rsi < prevLowestRSI {
-			prevLowestRSI = rsi
+
+		// 获取lookback周期前的历史最高/最低价格和RSI
+		prevHighestPrice := klines[checkIndex-lookback].High
+		prevLowestPrice := klines[checkIndex-lookback].Low
+		prevHighestRSI := rsiCache[checkIndex-lookback]
+		prevLowestRSI := prevHighestRSI
+
+		for i := checkIndex - lookback*2 + 1; i < checkIndex-lookback && i >= 0; i++ {
+			if klines[i].High > prevHighestPrice {
+				prevHighestPrice = klines[i].High
+			}
+			if klines[i].Low < prevLowestPrice {
+				prevLowestPrice = klines[i].Low
+			}
+
+			if rsiCache[i] > prevHighestRSI {
+				prevHighestRSI = rsiCache[i]
+			}
+			if rsiCache[i] < prevLowestRSI {
+				prevLowestRSI = rsiCache[i]
+			}
 		}
-	}
 
-	// 检测看跌背离: 价格创新高但RSI未创新高
-	priceHigherHigh := currentPrice == highestPrice && highestPrice > prevHighestPrice
-	rsiHigherHigh := currentRSI == highestRSI && highestRSI > prevHighestRSI
+		// 检测看跌背离: 价格创新高但RSI未创新高
+		priceHigherHigh := currentPrice == highestPrice && highestPrice > prevHighestPrice
+		rsiHigherHigh := currentRSI == highestRSI && highestRSI > prevHighestRSI
 
-	if priceHigherHigh && !rsiHigherHigh {
-		return &RSIDivergence{
-			Type:        "BEARISH",
-			Strength:    "REGULAR",
-			Description: fmt.Sprintf("看跌背离: 价格创新高(%.2f > %.2f)，RSI未创新高(%.2f vs %.2f)", highestPrice, prevHighestPrice, currentRSI, prevHighestRSI),
-			PricePoint1: prevHighestPrice,
-			PricePoint2: highestPrice,
-			RSIPoint1:   prevHighestRSI,
-			RSIPoint2:   currentRSI,
+		if priceHigherHigh && !rsiHigherHigh {
+			validityLeft := validPeriods - periodsAgo
+			description := fmt.Sprintf("看跌背离: 价格创新高(%.2f > %.2f)，RSI未创新高(%.2f vs %.2f)",
+				highestPrice, prevHighestPrice, currentRSI, prevHighestRSI)
+			if periodsAgo > 0 {
+				description = fmt.Sprintf("前%d周期%s", periodsAgo, description)
+			}
+
+			return &RSIDivergence{
+				Type:          "BEARISH",
+				Strength:      "REGULAR",
+				Description:   description,
+				PeriodsAgo:    periodsAgo,
+				ValidityLeft:  validityLeft,
+				PricePoint1:   prevHighestPrice,
+				PricePoint2:   highestPrice,
+				RSIPoint1:     prevHighestRSI,
+				RSIPoint2:     currentRSI,
+				DetectedIndex: checkIndex,
+			}
 		}
-	}
 
-	// 检测看涨背离: 价格创新低但RSI未创新低
-	priceLowerLow := currentPrice == lowestPrice && lowestPrice < prevLowestPrice
-	rsiLowerLow := currentRSI == lowestRSI && lowestRSI < prevLowestRSI
+		// 检测看涨背离: 价格创新低但RSI未创新低
+		priceLowerLow := currentPrice == lowestPrice && lowestPrice < prevLowestPrice
+		rsiLowerLow := currentRSI == lowestRSI && lowestRSI < prevLowestRSI
 
-	if priceLowerLow && !rsiLowerLow {
-		return &RSIDivergence{
-			Type:        "BULLISH",
-			Strength:    "REGULAR",
-			Description: fmt.Sprintf("看涨背离: 价格创新低(%.2f < %.2f)，RSI未创新低(%.2f vs %.2f)", lowestPrice, prevLowestPrice, currentRSI, prevLowestRSI),
-			PricePoint1: prevLowestPrice,
-			PricePoint2: lowestPrice,
-			RSIPoint1:   prevLowestRSI,
-			RSIPoint2:   currentRSI,
+		if priceLowerLow && !rsiLowerLow {
+			validityLeft := validPeriods - periodsAgo
+			description := fmt.Sprintf("看涨背离: 价格创新低(%.2f < %.2f)，RSI未创新低(%.2f vs %.2f)",
+				lowestPrice, prevLowestPrice, currentRSI, prevLowestRSI)
+			if periodsAgo > 0 {
+				description = fmt.Sprintf("前%d周期%s", periodsAgo, description)
+			}
+
+			return &RSIDivergence{
+				Type:          "BULLISH",
+				Strength:      "REGULAR",
+				Description:   description,
+				PeriodsAgo:    periodsAgo,
+				ValidityLeft:  validityLeft,
+				PricePoint1:   prevLowestPrice,
+				PricePoint2:   lowestPrice,
+				RSIPoint1:     prevLowestRSI,
+				RSIPoint2:     currentRSI,
+				DetectedIndex: checkIndex,
+			}
 		}
 	}
 
@@ -1091,4 +1154,252 @@ func parseFloat(v any) (float64, error) {
 	default:
 		return 0, fmt.Errorf("unsupported type: %T", v)
 	}
+}
+
+// detectCandleReversal 检测K线反转形态
+func detectCandleReversal(klines []Kline) *CandleReversal {
+	if len(klines) < 2 {
+		return &CandleReversal{
+			SingleCandle: &SingleCandlePattern{Type: "NONE", Description: "数据不足"},
+			DoubleCandle: &DoubleCandlePattern{Type: "NONE", Description: "数据不足"},
+		}
+	}
+
+	return &CandleReversal{
+		SingleCandle: detectSingleCandlePattern(klines),
+		DoubleCandle: detectDoubleCandlePattern(klines),
+	}
+}
+
+// detectSingleCandlePattern 检测单K线反转形态
+func detectSingleCandlePattern(klines []Kline) *SingleCandlePattern {
+	if len(klines) < 1 {
+		return &SingleCandlePattern{Type: "NONE", Description: "数据不足"}
+	}
+
+	current := klines[len(klines)-1]
+	body := math.Abs(current.Close - current.Open)
+	totalRange := current.High - current.Low
+
+	if totalRange == 0 {
+		return &SingleCandlePattern{Type: "NONE", Description: "无价格波动"}
+	}
+
+	upperShadow := current.High - math.Max(current.Open, current.Close)
+	lowerShadow := math.Min(current.Open, current.Close) - current.Low
+
+	// 看涨锤子线 (Bullish Hammer)
+	// 特征: 下影线长(至少是实体的2倍), 上影线很短或没有, 实体在上部
+	if lowerShadow >= body*2 && upperShadow <= body*0.3 && current.Close > current.Open {
+		strength := math.Min(lowerShadow/body/3, 1.0) // 下影线越长，信号越强
+		return &SingleCandlePattern{
+			Type:        "BULLISH_HAMMER",
+			Description: fmt.Sprintf("看涨锤子线: 下影线%.2f%%, 实体%.2f%%", lowerShadow/totalRange*100, body/totalRange*100),
+			Strength:    strength,
+		}
+	}
+
+	// 看涨倒锤子线 (Bullish Inverted Hammer)
+	// 特征: 上影线长(至少是实体的2倍), 下影线很短或没有, 实体在下部
+	if upperShadow >= body*2 && lowerShadow <= body*0.3 && current.Close > current.Open {
+		strength := math.Min(upperShadow/body/3, 1.0)
+		return &SingleCandlePattern{
+			Type:        "BULLISH_INVERTED_HAMMER",
+			Description: fmt.Sprintf("看涨倒锤子线: 上影线%.2f%%, 实体%.2f%%", upperShadow/totalRange*100, body/totalRange*100),
+			Strength:    strength,
+		}
+	}
+
+	// 看跌流星线 (Bearish Shooting Star)
+	// 特征: 上影线长(至少是实体的2倍), 下影线很短或没有, 实体在下部
+	if upperShadow >= body*2 && lowerShadow <= body*0.3 && current.Close < current.Open {
+		strength := math.Min(upperShadow/body/3, 1.0)
+		return &SingleCandlePattern{
+			Type:        "BEARISH_SHOOTING_STAR",
+			Description: fmt.Sprintf("看跌流星线: 上影线%.2f%%, 实体%.2f%%", upperShadow/totalRange*100, body/totalRange*100),
+			Strength:    strength,
+		}
+	}
+
+	// 看跌上吊线 (Bearish Hanging Man)
+	// 特征: 下影线长(至少是实体的2倍), 上影线很短或没有, 实体在上部
+	if lowerShadow >= body*2 && upperShadow <= body*0.3 && current.Close < current.Open {
+		strength := math.Min(lowerShadow/body/3, 1.0)
+		return &SingleCandlePattern{
+			Type:        "BEARISH_HANGING_MAN",
+			Description: fmt.Sprintf("看跌上吊线: 下影线%.2f%%, 实体%.2f%%", lowerShadow/totalRange*100, body/totalRange*100),
+			Strength:    strength,
+		}
+	}
+
+	// 看涨十字星 (Bullish Doji) - 实体很小
+	if body/totalRange <= 0.1 && len(klines) >= 2 {
+		prev := klines[len(klines)-2]
+		if prev.Close < prev.Open { // 前一根是阴线
+			strength := 0.5 // 十字星信号相对较弱
+			return &SingleCandlePattern{
+				Type:        "BULLISH_DOJI",
+				Description: fmt.Sprintf("看涨十字星: 实体仅%.2f%%", body/totalRange*100),
+				Strength:    strength,
+			}
+		}
+	}
+
+	// 看跌十字星 (Bearish Doji)
+	if body/totalRange <= 0.1 && len(klines) >= 2 {
+		prev := klines[len(klines)-2]
+		if prev.Close > prev.Open { // 前一根是阳线
+			strength := 0.5
+			return &SingleCandlePattern{
+				Type:        "BEARISH_DOJI",
+				Description: fmt.Sprintf("看跌十字星: 实体仅%.2f%%", body/totalRange*100),
+				Strength:    strength,
+			}
+		}
+	}
+
+	return &SingleCandlePattern{Type: "NONE", Description: "未检测到单K线反转形态"}
+}
+
+// detectDoubleCandlePattern 检测双K线反转形态
+func detectDoubleCandlePattern(klines []Kline) *DoubleCandlePattern {
+	if len(klines) < 2 {
+		return &DoubleCandlePattern{Type: "NONE", Description: "数据不足"}
+	}
+
+	prev := klines[len(klines)-2]
+	current := klines[len(klines)-1]
+
+	prevBody := math.Abs(prev.Close - prev.Open)
+	currentBody := math.Abs(current.Close - current.Open)
+	prevRange := prev.High - prev.Low
+	currentRange := current.High - current.Low
+
+	if prevRange == 0 || currentRange == 0 {
+		return &DoubleCandlePattern{Type: "NONE", Description: "无价格波动"}
+	}
+
+	// 看涨吞没 (Bullish Engulfing)
+	// 特征: 前一根阴线，当前阳线完全吞没前一根
+	if prev.Close < prev.Open && current.Close > current.Open {
+		if current.Open <= prev.Close && current.Close >= prev.Open {
+			engulfRatio := currentBody / prevBody
+			strength := math.Min(engulfRatio/2, 1.0) // 吞没程度越大，信号越强
+			return &DoubleCandlePattern{
+				Type:        "BULLISH_ENGULFING",
+				Description: fmt.Sprintf("看涨吞没: 当前阳线吞没前阴线%.1f倍", engulfRatio),
+				Strength:    strength,
+			}
+		}
+	}
+
+	// 看跌吞没 (Bearish Engulfing)
+	// 特征: 前一根阳线，当前阴线完全吞没前一根
+	if prev.Close > prev.Open && current.Close < current.Open {
+		if current.Open >= prev.Close && current.Close <= prev.Open {
+			engulfRatio := currentBody / prevBody
+			strength := math.Min(engulfRatio/2, 1.0)
+			return &DoubleCandlePattern{
+				Type:        "BEARISH_ENGULFING",
+				Description: fmt.Sprintf("看跌吞没: 当前阴线吞没前阳线%.1f倍", engulfRatio),
+				Strength:    strength,
+			}
+		}
+	}
+
+	// 看涨刺透形态 (Bullish Piercing Pattern)
+	// 特征: 前一根阴线，当前阳线开盘低于前收盘，收盘在前实体中部以上
+	if prev.Close < prev.Open && current.Close > current.Open {
+		prevMidpoint := (prev.Open + prev.Close) / 2
+		if current.Open < prev.Close && current.Close > prevMidpoint && current.Close < prev.Open {
+			penetration := (current.Close - prev.Close) / prevBody
+			strength := math.Min(penetration, 1.0)
+			return &DoubleCandlePattern{
+				Type:        "BULLISH_PIERCING",
+				Description: fmt.Sprintf("看涨刺透: 刺入前阴线%.1f%%", penetration*100),
+				Strength:    strength,
+			}
+		}
+	}
+
+	// 看跌乌云盖顶 (Bearish Dark Cloud Cover)
+	// 特征: 前一根阳线，当前阴线开盘高于前收盘，收盘在前实体中部以下
+	if prev.Close > prev.Open && current.Close < current.Open {
+		prevMidpoint := (prev.Open + prev.Close) / 2
+		if current.Open > prev.Close && current.Close < prevMidpoint && current.Close > prev.Open {
+			penetration := (prev.Close - current.Close) / prevBody
+			strength := math.Min(penetration, 1.0)
+			return &DoubleCandlePattern{
+				Type:        "BEARISH_DARK_CLOUD",
+				Description: fmt.Sprintf("看跌乌云盖顶: 覆盖前阳线%.1f%%", penetration*100),
+				Strength:    strength,
+			}
+		}
+	}
+
+	// 看涨孕线 (Bullish Harami)
+	// 特征: 前一根大阴线，当前小阳线完全在前一根实体内
+	if prev.Close < prev.Open && current.Close > current.Open {
+		if current.Open >= prev.Close && current.Close <= prev.Open && currentBody < prevBody*0.5 {
+			strength := 0.6 // 孕线信号相对中等
+			return &DoubleCandlePattern{
+				Type:        "BULLISH_HARAMI",
+				Description: fmt.Sprintf("看涨孕线: 小阳线在大阴线内(%.1f%%)", currentBody/prevBody*100),
+				Strength:    strength,
+			}
+		}
+	}
+
+	// 看跌孕线 (Bearish Harami)
+	// 特征: 前一根大阳线，当前小阴线完全在前一根实体内
+	if prev.Close > prev.Open && current.Close < current.Open {
+		if current.Open <= prev.Close && current.Close >= prev.Open && currentBody < prevBody*0.5 {
+			strength := 0.6
+			return &DoubleCandlePattern{
+				Type:        "BEARISH_HARAMI",
+				Description: fmt.Sprintf("看跌孕线: 小阴线在大阳线内(%.1f%%)", currentBody/prevBody*100),
+				Strength:    strength,
+			}
+		}
+	}
+
+	// 看涨启明星 (需要检查前面是否有下跌趋势)
+	if len(klines) >= 3 {
+		prevPrev := klines[len(klines)-3]
+		// 前两根: 大阴线 + 小实体(跳空低开) + 大阳线(收盘在第一根中部以上)
+		if prevPrev.Close < prevPrev.Open && current.Close > current.Open {
+			prevPrevBody := math.Abs(prevPrev.Close - prevPrev.Open)
+			if prevBody < prevPrevBody*0.3 && currentBody > prevPrevBody*0.5 {
+				if prev.High < prevPrev.Close && current.Close > (prevPrev.Open+prevPrev.Close)/2 {
+					strength := 0.8 // 启明星是较强的反转信号
+					return &DoubleCandlePattern{
+						Type:        "BULLISH_MORNING_STAR",
+						Description: "看涨启明星: 三K线底部反转形态",
+						Strength:    strength,
+					}
+				}
+			}
+		}
+	}
+
+	// 看跌黄昏星
+	if len(klines) >= 3 {
+		prevPrev := klines[len(klines)-3]
+		// 前两根: 大阳线 + 小实体(跳空高开) + 大阴线(收盘在第一根中部以下)
+		if prevPrev.Close > prevPrev.Open && current.Close < current.Open {
+			prevPrevBody := math.Abs(prevPrev.Close - prevPrev.Open)
+			if prevBody < prevPrevBody*0.3 && currentBody > prevPrevBody*0.5 {
+				if prev.Low > prevPrev.Close && current.Close < (prevPrev.Open+prevPrev.Close)/2 {
+					strength := 0.8
+					return &DoubleCandlePattern{
+						Type:        "BEARISH_EVENING_STAR",
+						Description: "看跌黄昏星: 三K线顶部反转形态",
+						Strength:    strength,
+					}
+				}
+			}
+		}
+	}
+
+	return &DoubleCandlePattern{Type: "NONE", Description: "未检测到双K线反转形态"}
 }
