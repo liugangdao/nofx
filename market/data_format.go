@@ -32,7 +32,7 @@ func Format(data *Data) string {
 
 	// 1小时周期
 	if data.Timeframe1h != nil {
-		sb.WriteString("=== 1-Hour Timeframe ===\n\n")
+		sb.WriteString("=== 15-Min Timeframe ===\n\n")
 		formatTimeframeData(&sb, data.Timeframe1h, data.CurrentPrice)
 	}
 

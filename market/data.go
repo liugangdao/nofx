@@ -129,11 +129,11 @@ func Get(symbol string, interval int) (*Data, error) {
 	// 标准化symbol
 	symbol = Normalize(symbol)
 
-	// 获取12小时K线数据
-	klines12h, err := getKlines(symbol, "12h", 250) // 需要足够数据计算EMA200
-	if err != nil {
-		return nil, fmt.Errorf("获取12小时K线失败: %v", err)
-	}
+	// // 获取12小时K线数据
+	// klines12h, err := getKlines(symbol, "12h", 250) // 需要足够数据计算EMA200
+	// if err != nil {
+	// 	return nil, fmt.Errorf("获取12小时K线失败: %v", err)
+	// }
 
 	// 获取4小时K线数据
 	klines4h, err := getKlines(symbol, "4h", 250)
@@ -142,7 +142,7 @@ func Get(symbol string, interval int) (*Data, error) {
 	}
 
 	// 获取1小时K线数据
-	klines1h, err := getKlines(symbol, "1h", 250)
+	klines1h, err := getKlines(symbol, "15m", 250)
 	if err != nil {
 		return nil, fmt.Errorf("获取1小时K线失败: %v", err)
 	}
@@ -161,16 +161,16 @@ func Get(symbol string, interval int) (*Data, error) {
 	fundingRate, _ := getFundingRate(symbol)
 
 	// 计算各时间周期数据
-	timeframe12h := calculateTimeframeData(klines12h, "12h", currentPrice, false)
+	// timeframe12h := calculateTimeframeData(klines12h, "12h", currentPrice, false)
 	timeframe4h := calculateTimeframeData(klines4h, "4h", currentPrice, true)
-	timeframe1h := calculateTimeframeData(klines1h, "1h", currentPrice, true)
+	timeframe1h := calculateTimeframeData(klines1h, "15m", currentPrice, true)
 
 	return &Data{
-		Symbol:              symbol,
-		CurrentPrice:        currentPrice,
-		OpenInterest:        oiData,
-		FundingRate:         fundingRate,
-		Timeframe12h:        timeframe12h,
+		Symbol:       symbol,
+		CurrentPrice: currentPrice,
+		OpenInterest: oiData,
+		FundingRate:  fundingRate,
+		// Timeframe12h:        timeframe12h,
 		Timeframe4h:         timeframe4h,
 		Timeframe1h:         timeframe1h,
 		ScanIntervalMinutes: interval,
@@ -190,6 +190,8 @@ func getKlines(symbol, interval string, limit int) ([]Kline, error) {
 	endTime := time.Now().Unix() * 1000
 	var intervalMs int64
 	switch interval {
+	case "15m":
+		intervalMs = 15 * 60 * 1000
 	case "1h":
 		intervalMs = 3600 * 1000
 	case "4h":
@@ -785,7 +787,7 @@ func calculateTimeframeData(klines []Kline, timeframe string, currentPrice float
 	data.RSIDivergence = calculateRSIDivergence(klines, 14, 10, 5)
 
 	// 计算K线反转信号 (仅对1h和4h周期)
-	if timeframe == "1h" || timeframe == "4h" {
+	if timeframe == "1h" || timeframe == "4h" || timeframe == "15m" {
 		data.CandleReversal = detectCandleReversal(klines)
 	}
 

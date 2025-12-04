@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -94,6 +95,28 @@ func (cfg *Client) SetGeminiAPIKey(apiKey string) error {
 	clientConfig := &genai.ClientConfig{
 		APIKey: apiKey,
 	}
+
+	// 配置代理（如果设置了环境变量）
+	httpClient := &http.Client{
+		Timeout: cfg.Timeout,
+	}
+
+	// 检查代理环境变量
+	proxyURL := "http://127.0.0.1:7897"
+
+	if proxyURL != "" {
+		proxy, err := url.Parse(proxyURL)
+		if err != nil {
+			fmt.Printf("⚠️ 解析代理URL失败: %v\n", err)
+		} else {
+			fmt.Printf("✓ 使用代理: %s\n", proxyURL)
+			httpClient.Transport = &http.Transport{
+				Proxy: http.ProxyURL(proxy),
+			}
+		}
+	}
+
+	clientConfig.HTTPClient = httpClient
 
 	client, err := genai.NewClient(ctx, clientConfig)
 	if err != nil {
