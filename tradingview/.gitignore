@@ -1,0 +1,34 @@
+# 编译文件
+tradingview_webhook
+tradingview_webhook.exe
+tradingview_webhook_linux
+*.backup
+
+# 配置文件（包含敏感信息）
+tradingview_config.json
+
+# 日志文件
+*.log
+logs/
+
+# PID 文件
+*.pid
+
+# 临时文件
+*.tmp
+*.swp
+*~
+nohup.out
+
+# 备份文件
+*.backup
+*.bak
+
+# IDE 文件
+.vscode/
+.idea/
+*.iml
+
+# 操作系统文件
+.DS_Store
+Thumbs.db

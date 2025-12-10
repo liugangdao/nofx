@@ -1,0 +1,10 @@
+{
+  "port": 9090,
+  "private_key": "your_ethereum_private_key_without_0x_prefix",
+  "wallet_addr": "0xYourEthereumAddress",
+  "testnet": false,
+  "default_quantity": 0,
+  "position_size_percent": 5.0,
+  "default_leverage": 5,
+  "webhook_secret": "your_secret_key_for_webhook_verification"
+}
