@@ -47,11 +47,22 @@ type TimeframeData struct {
 	StructureDetail *MarketStructure   // 详细市场结构
 	RSIDivergence   *RSIDivergence     // RSI背离信号
 	CandleReversal  *CandleReversal    // K线反转信号
+	Supertrend      *SupertrendData    // 超级趋势指标
 
 	// 时间序列数据 (最近10个数据点，从旧到新)
 	PriceSeries []float64 // 价格序列
 	EMA20Series []float64 // EMA20序列
 	RSISeries   []float64 // RSI序列
+}
+
+// SupertrendData 超级趋势指标数据
+type SupertrendData struct {
+	Trend           string  // "UPTREND" (上升趋势), "DOWNTREND" (下降趋势)
+	Value           float64 // 超级趋势线值
+	SupportLevel    float64 // 支撑位 (多头时使用)
+	ResistanceLevel float64 // 阻力位 (空头时使用)
+	ATRMultiplier   float64 // ATR倍数 (默认3.0)
+	Description     string  // 描述
 }
 
 // VolumeProfileData 成交量分布数据
@@ -750,6 +761,102 @@ func calculateRVOL(klines []Kline, period int) float64 {
 	return 0
 }
 
+// calculateSupertrend 计算超级趋势指标
+// period: ATR周期 (通常10)
+// multiplier: ATR倍数 (通常3.0)
+func calculateSupertrend(klines []Kline, period int, multiplier float64) *SupertrendData {
+	if len(klines) < period+1 {
+		return &SupertrendData{
+			Trend:       "UNKNOWN",
+			Description: "数据不足",
+		}
+	}
+
+	// 需要计算所有K线的超级趋势以维护状态
+	n := len(klines)
+	finalUpperBands := make([]float64, n)
+	finalLowerBands := make([]float64, n)
+	trends := make([]string, n)
+
+	// 计算每根K线的ATR（简化版本，使用固定ATR）
+	atr := calculateATR(klines, period)
+
+	// 计算每根K线的超级趋势
+	for i := 0; i < n; i++ {
+		hl2 := (klines[i].High + klines[i].Low) / 2
+		basicUpperBand := hl2 + multiplier*atr
+		basicLowerBand := hl2 - multiplier*atr
+
+		// 第一根K线
+		if i == 0 {
+			finalUpperBands[i] = basicUpperBand
+			finalLowerBands[i] = basicLowerBand
+			// 初始趋势根据收盘价判断
+			if klines[i].Close > hl2 {
+				trends[i] = "UPTREND"
+			} else {
+				trends[i] = "DOWNTREND"
+			}
+			continue
+		}
+
+		// 计算最终上轨
+		if basicUpperBand < finalUpperBands[i-1] || klines[i-1].Close > finalUpperBands[i-1] {
+			finalUpperBands[i] = basicUpperBand
+		} else {
+			finalUpperBands[i] = finalUpperBands[i-1]
+		}
+
+		// 计算最终下轨
+		if basicLowerBand > finalLowerBands[i-1] || klines[i-1].Close < finalLowerBands[i-1] {
+			finalLowerBands[i] = basicLowerBand
+		} else {
+			finalLowerBands[i] = finalLowerBands[i-1]
+		}
+
+		// 判断趋势
+		// 如果前一根是上升趋势
+		if trends[i-1] == "UPTREND" {
+			// 收盘价跌破下轨，转为下降趋势
+			if klines[i].Close <= finalLowerBands[i] {
+				trends[i] = "DOWNTREND"
+			} else {
+				trends[i] = "UPTREND"
+			}
+		} else {
+			// 如果前一根是下降趋势
+			// 收盘价突破上轨，转为上升趋势
+			if klines[i].Close >= finalUpperBands[i] {
+				trends[i] = "UPTREND"
+			} else {
+				trends[i] = "DOWNTREND"
+			}
+		}
+	}
+
+	// 返回最后一根K线的超级趋势
+	lastIdx := n - 1
+	trend := trends[lastIdx]
+	var supertrendValue float64
+	if trend == "UPTREND" {
+		supertrendValue = finalLowerBands[lastIdx]
+	} else {
+		supertrendValue = finalUpperBands[lastIdx]
+	}
+
+	description := fmt.Sprintf("%s | 超级趋势线: %.2f | 支撑: %.2f | 阻力: %.2f",
+		trend, supertrendValue, finalLowerBands[lastIdx], finalUpperBands[lastIdx])
+
+	return &SupertrendData{
+		Trend:           trend,
+		Value:           supertrendValue,
+		SupportLevel:    finalLowerBands[lastIdx],
+		ResistanceLevel: finalUpperBands[lastIdx],
+		ATRMultiplier:   multiplier,
+		Description:     description,
+	}
+}
+
 // calculateTimeframeData 计算时间周期数据
 func calculateTimeframeData(klines []Kline, timeframe string, currentPrice float64, includeATR bool) *TimeframeData {
 	data := &TimeframeData{
@@ -804,6 +911,9 @@ func calculateTimeframeData(klines []Kline, timeframe string, currentPrice float
 
 	// 计算相对成交量 (当前成交量 / 过去20根K线平均成交量)
 	data.RVOL = calculateRVOL(klines, 20)
+
+	// 计算超级趋势指标
+	data.Supertrend = calculateSupertrend(klines, 10, 3.5)
 
 	// 计算时间序列数据 (最近10个数据点)
 	seriesStart := len(klines) - 10

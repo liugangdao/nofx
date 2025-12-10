@@ -42,6 +42,9 @@ type Trader interface {
 	// CancelTakeProfitOrders 仅取消止盈单（不影响止损单）
 	CancelTakeProfitOrders(symbol string) error
 
+	// GetOpenOrders 获取指定币种的所有未完成订单
+	GetOpenOrders(symbol string) ([]map[string]interface{}, error)
+
 	// FormatQuantity 格式化数量到正确的精度
 	FormatQuantity(symbol string, quantity float64) (string, error)
 }

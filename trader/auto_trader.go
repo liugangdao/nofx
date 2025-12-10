@@ -97,11 +97,14 @@ type AutoTrader struct {
 
 // PnLTracking 持仓盈亏跟踪数据
 type PnLTracking struct {
-	MaxProfitPct    float64 // 最大盈利百分比
-	MaxLossPct      float64 // 最大亏损百分比（负数）
-	TakeProfitPrice float64 // AI设置的止盈价格
-	StopLossPrice   float64 // AI设置的止损价格
-	EntryPrice      float64 // 开仓价格
+	MaxProfitPct      float64 // 最大盈利百分比
+	MaxLossPct        float64 // 最大亏损百分比（负数）
+	TakeProfitPrice   float64 // AI设置的止盈价格
+	StopLossPrice     float64 // AI设置的止损价格
+	EntryPrice        float64 // 开仓价格
+	Stage             int     // 止盈阶段: 1=第一阶段(固定目标), 2=第二阶段(移动止盈)
+	PartialTakenAt    float64 // 部分止盈时的价格
+	RemainingQuantity float64 // 剩余仓位数量百分比 (0-1, 1表示100%)
 }
 
 // PositionSnapshot 持仓快照（用于检测止损止盈触发）

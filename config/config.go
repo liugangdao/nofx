@@ -12,6 +12,7 @@ type TraderConfig struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`  // 是否启用该trader
+	Mode    string `json:"mode"`     // "tm" (交易机器人) 或 "pm" (仓位管理器)
 	AIModel string `json:"ai_model"` // "qwen", "deepseek", "gemini", or "custom"
 
 	// 截图功能配置（仅Gemini支持）
@@ -126,6 +127,15 @@ func (c *Config) Validate() error {
 		if trader.Name == "" {
 			return fmt.Errorf("trader[%d]: Name不能为空", i)
 		}
+
+		// 验证模式
+		if trader.Mode == "" {
+			trader.Mode = "tm" // 默认为交易机器人
+		}
+		if trader.Mode != "tm" && trader.Mode != "pm" {
+			return fmt.Errorf("trader[%d]: mode必须是 'tm' (交易机器人) 或 'pm' (仓位管理器)", i)
+		}
+
 		if trader.AIModel != "qwen" && trader.AIModel != "deepseek" && trader.AIModel != "gemini" && trader.AIModel != "custom" {
 			return fmt.Errorf("trader[%d]: ai_model必须是 'qwen', 'deepseek', 'gemini' 或 'custom'", i)
 		}

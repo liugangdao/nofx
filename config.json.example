@@ -4,6 +4,7 @@
       "id": "hyperliquid_deepseek",
       "name": "Hyperliquid DeepSeek Trader",
       "enabled": true,
+      "mode": "tm",
       "ai_model": "deepseek",
       "exchange": "hyperliquid",
       "hyperliquid_private_key": "your_ethereum_private_key_without_0x_prefix",
@@ -19,6 +20,7 @@
       "id": "binance_qwen",
       "name": "Binance Qwen Trader",
       "enabled": true,
+      "mode": "tm",
       "ai_model": "qwen",
       "exchange": "binance",
       "binance_api_key": "your_binance_api_key",
@@ -31,6 +33,7 @@
       "id": "binance_custom",
       "name": "Binance Custom API Trader",
       "enabled": false,
+      "mode": "tm",
       "ai_model": "custom",
       "exchange": "binance",
       "binance_api_key": "your_binance_api_key",
@@ -45,6 +48,7 @@
       "id": "aster_deepseek",
       "name": "Aster DeepSeek Trader",
       "enabled": true,
+      "mode": "tm",
       "ai_model": "deepseek",
       "exchange": "aster",
 
@@ -60,6 +64,19 @@
       "deepseek_key": "your_deepseek_api_key",
       "initial_balance": 1000.0,
       "scan_interval_minutes": 3
+    },
+    {
+      "id": "binance_position_manager",
+      "name": "Binance Position Manager",
+      "enabled": false,
+      "mode": "pm",
+      "ai_model": "deepseek",
+      "exchange": "binance",
+      "binance_api_key": "your_binance_api_key",
+      "binance_secret_key": "your_binance_secret_key",
+      "deepseek_key": "your_deepseek_api_key",
+      "initial_balance": 1000,
+      "scan_interval_minutes": 5
     }
   ],
   "leverage": {

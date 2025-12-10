@@ -971,3 +971,10 @@ func (t *AsterTrader) FormatQuantity(symbol string, quantity float64) (string, e
 	}
 	return fmt.Sprintf("%v", formatted), nil
 }
+
+// GetOpenOrders 获取指定币种的所有未完成订单
+func (t *AsterTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, error) {
+	// TODO: Aster暂未实现获取未完成订单功能
+	log.Printf("⚠️  Aster暂不支持获取未完成订单")
+	return []map[string]interface{}{}, nil
+}

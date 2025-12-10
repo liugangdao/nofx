@@ -764,3 +764,38 @@ func absFloat(x float64) float64 {
 	}
 	return x
 }
+
+// GetOpenOrders 获取指定币种的所有未完成订单
+func (t *HyperliquidTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, error) {
+	coin := convertSymbolToHyperliquid(symbol)
+
+	// 获取所有未完成订单
+	allOrders, err := t.exchange.Info().OpenOrders(t.ctx, t.walletAddr)
+	if err != nil {
+		return nil, fmt.Errorf("获取未完成订单失败: %w", err)
+	}
+
+	// 过滤出指定币种的订单
+	result := make([]map[string]interface{}, 0)
+	for _, order := range allOrders {
+		if order.Coin != coin {
+			continue
+		}
+
+		orderMap := map[string]interface{}{
+			"orderId": order.Oid,
+			"symbol":  symbol,
+			"coin":    order.Coin,
+			"side":    order.Side,
+			"limitPx": order.LimitPx,
+		}
+
+		// Hyperliquid的触发单信息可能在Order.Trigger中
+		// 由于SDK结构不明确，我们先返回基本信息
+		// 触发价格需要通过其他方式获取或从订单详情中解析
+
+		result = append(result, orderMap)
+	}
+
+	return result, nil
+}

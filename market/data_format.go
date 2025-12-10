@@ -64,6 +64,12 @@ func formatTimeframeData(sb *strings.Builder, tf *TimeframeData, currentPrice fl
 			tf.RSIDivergence.Type, tf.RSIDivergence.Strength, tf.RSIDivergence.Description, validityInfo))
 	}
 
+	// 显示超级趋势指标
+	if tf.Supertrend != nil {
+		sb.WriteString(fmt.Sprintf("Supertrend: %s | Value: %.2f | Support: %.2f | Resistance: %.2f\n",
+			tf.Supertrend.Trend, tf.Supertrend.Value, tf.Supertrend.SupportLevel, tf.Supertrend.ResistanceLevel))
+	}
+
 	// 显示K线反转信号
 	if tf.CandleReversal != nil {
 		formatCandleReversal(sb, tf.CandleReversal)

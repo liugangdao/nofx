@@ -759,3 +759,37 @@ func stringContains(s, substr string) bool {
 	}
 	return false
 }
+
+// GetOpenOrders 获取指定币种的所有未完成订单
+func (t *FuturesTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, error) {
+	orders, err := t.client.NewListOpenOrdersService().
+		Symbol(symbol).
+		Do(context.Background())
+
+	if err != nil {
+		return nil, fmt.Errorf("获取未完成订单失败: %w", err)
+	}
+
+	result := make([]map[string]interface{}, 0, len(orders))
+	for _, order := range orders {
+		stopPrice, _ := strconv.ParseFloat(order.StopPrice, 64)
+		price, _ := strconv.ParseFloat(order.Price, 64)
+		origQty, _ := strconv.ParseFloat(order.OrigQuantity, 64)
+
+		orderMap := map[string]interface{}{
+			"orderId":      order.OrderID,
+			"symbol":       order.Symbol,
+			"type":         string(order.Type),
+			"side":         string(order.Side),
+			"positionSide": string(order.PositionSide),
+			"price":        price,
+			"stopPrice":    stopPrice,
+			"origQty":      origQty,
+			"status":       string(order.Status),
+			"workingType":  string(order.WorkingType),
+		}
+		result = append(result, orderMap)
+	}
+
+	return result, nil
+}
