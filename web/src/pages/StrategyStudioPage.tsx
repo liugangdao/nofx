@@ -35,6 +35,8 @@ import type {
   VergexSignalDimension,
   VergexSignalItem,
   VergexSignalLabResponse,
+  VergexDirectionCurrentResponse,
+  VergexDirectionHistoryResponse,
 } from '../lib/api/data'
 import { buildDashboardPath, ROUTES } from '../router/paths'
 
@@ -555,7 +557,7 @@ function BandSelector({
   )
 }
 
-function SignalLabPanel({
+export function LegacySignalLabPanel({
   lab,
   activeBand,
   loading,
@@ -731,6 +733,56 @@ function SignalLabPanel({
             note="Share held by the top 10 addresses."
             tone="neutral"
           />
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function DirectionChangePanel({
+  current,
+  history,
+}: {
+  current: VergexDirectionCurrentResponse | null
+  history: VergexDirectionHistoryResponse | null
+}) {
+  if (!current && !history) {
+    return (
+      <div className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper p-4 text-sm text-nofx-text-muted">
+        Bull/Bear Radar has not loaded yet.
+      </div>
+    )
+  }
+  const direction = current?.direction || current?.new_bias || 'neutral'
+  const factors = Object.entries(current?.reason || {})
+  return (
+    <section className="overflow-hidden rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter shadow-lg">
+      <div className="border-b border-[rgba(26,24,19,0.14)] px-5 py-4">
+        <div className="text-base font-semibold text-nofx-text">Bull/Bear Radar</div>
+        <div className={`mt-3 text-3xl font-bold ${directionStyle(direction).text}`}>
+          {signalBiasInfo(direction).label}
+        </div>
+        <div className="mt-2 font-mono text-sm text-nofx-text-muted">
+          mark {formatPrice(current?.mark_price)} · stable since {current?.stable_since_at ? new Date(current.stable_since_at).toLocaleString() : '—'}
+        </div>
+      </div>
+      {factors.length > 0 ? (
+        <div className="grid gap-3 p-5 md:grid-cols-2 xl:grid-cols-5">
+          {factors.map(([name, value]) => (
+            <DetailMetricCard key={name} label={name.toUpperCase()} value={value} tone="neutral" />
+          ))}
+        </div>
+      ) : null}
+      <div className="border-t border-[rgba(26,24,19,0.14)] p-5">
+        <div className="mb-3 text-sm font-semibold text-nofx-text">Direction changes</div>
+        <div className="space-y-2">
+          {(history?.items || []).slice(0, 10).map((item, index) => (
+            <div key={`${item.occurred_at || index}`} className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-nofx-bg-deeper px-3 py-2 text-sm">
+              <span className="font-mono text-nofx-text">{item.prev_bias || '—'} → {item.new_bias || '—'}</span>
+              <span className="font-mono text-nofx-text-muted">{formatPrice(item.mark_price)} · {item.occurred_at ? new Date(item.occurred_at).toLocaleString() : '—'}</span>
+            </div>
+          ))}
+          {!history?.items?.length ? <div className="text-sm text-nofx-text-muted">No direction-change history returned.</div> : null}
         </div>
       </div>
     </section>
@@ -1005,9 +1057,8 @@ export function StrategyStudioPage() {
   const [detailSignal, setDetailSignal] = useState<VergexSignalItem | null>(
     null
   )
-  const [signalLab, setSignalLab] = useState<VergexSignalLabResponse | null>(
-    null
-  )
+  const [directionCurrent, setDirectionCurrent] = useState<VergexDirectionCurrentResponse | null>(null)
+  const [directionHistory, setDirectionHistory] = useState<VergexDirectionHistoryResponse | null>(null)
   const [heatmap, setHeatmap] = useState<VergexHeatmapResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -1114,7 +1165,7 @@ export function StrategyStudioPage() {
     setSignalsLoading(true)
     setSignalsError('')
     try {
-      const result = await api.getVergexSignalRanking(claw402BoardLimit)
+      const result = await api.getVergexDirectionChangeLeaderboard(claw402BoardLimit)
       setSignals(result.items || [])
       setListMode('claw402')
     } catch (err) {
@@ -1140,7 +1191,8 @@ export function StrategyStudioPage() {
 
       setDetailLiqBand(nextBand)
       setDetailSignal(item)
-      setSignalLab(null)
+      setDirectionCurrent(null)
+      setDirectionHistory(null)
       setHeatmap(null)
       setDetailError('')
       setDetailLoading(true)
@@ -1151,21 +1203,30 @@ export function StrategyStudioPage() {
           ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
       })
 
-      const [labResult, heatmapResult] = await Promise.allSettled([
-        api.getVergexSignalLab(params),
+      const [currentResult, historyResult, heatmapResult] = await Promise.allSettled([
+        api.getVergexDirectionChangeCurrent(item.symbol),
+        api.getVergexDirectionChangeHistory(item.symbol, 'all', 1, 20),
         api.getVergexCostLiquidationHeatmap(params),
       ])
 
       const errors: string[] = []
-      if (labResult.status === 'fulfilled') {
-        setSignalLab(labResult.value)
+      if (currentResult.status === 'fulfilled') {
+        setDirectionCurrent(currentResult.value)
       } else {
         errors.push(
-          `Signal Lab: ${
-            labResult.reason instanceof Error
-              ? labResult.reason.message
+          `Current direction: ${
+            currentResult.reason instanceof Error
+              ? currentResult.reason.message
               : 'unavailable'
           }`
+        )
+      }
+
+      if (historyResult.status === 'fulfilled') {
+        setDirectionHistory(historyResult.value)
+      } else {
+        errors.push(
+          `Direction history: ${historyResult.reason instanceof Error ? historyResult.reason.message : 'unavailable'}`
         )
       }
 
@@ -1185,16 +1246,6 @@ export function StrategyStudioPage() {
       setDetailLoading(false)
     },
     [coinSource?.vergex_liq_band, detailLiqBand, token]
-  )
-
-  const selectDetailBand = useCallback(
-    (band: string) => {
-      setDetailLiqBand(band)
-      if (detailSignal) {
-        void loadSignalDetail(detailSignal, band)
-      }
-    },
-    [detailSignal, loadSignalDetail]
   )
 
   useEffect(() => {
@@ -2137,11 +2188,9 @@ export function StrategyStudioPage() {
                         </section>
 
                         <CostLiquidationHeatmap heatmap={heatmap} />
-                        <SignalLabPanel
-                          lab={signalLab}
-                          activeBand={detailLiqBand}
-                          loading={detailLoading}
-                          onBandChange={selectDetailBand}
+                        <DirectionChangePanel
+                          current={directionCurrent}
+                          history={directionHistory}
                         />
                       </>
                     ) : (

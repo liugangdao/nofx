@@ -8,7 +8,7 @@ import (
 
 func TestDirectionalCandidates(t *testing.T) {
 	e := &StrategyEngine{
-		vergexRankingCache: map[string]*vergex.SignalRankItem{
+		vergexRankingCache: map[string]*vergex.DirectionChangeItem{
 			"xyz:NVDA": {Symbol: "xyz:NVDA", Bias: "bullish", Rank: 2, Score: 1.07},
 			"xyz:AAPL": {Symbol: "xyz:AAPL", Bias: "bullish", Rank: 1, Score: 1.76},
 			"BTC":      {Symbol: "BTC", Bias: "bearish", Rank: 3, Score: -0.9},

@@ -211,8 +211,9 @@ func (s *Server) setupRoutes() {
 			// Server IP query (requires authentication, for whitelist configuration)
 			s.route(protected, "GET", "/server-ip", "Get server public IP (for exchange whitelist)", s.handleGetServerIP)
 
-			s.route(protected, "GET", "/vergex/signal-ranking", "Vergex signal ranking via claw402 (?marketType=all&limit=30)", s.handleVergexSignalRanking)
-			s.route(protected, "GET", "/vergex/signal-lab", "Vergex signal lab via claw402 (?marketType=hip3_perp&symbol=AAPL)", s.handleVergexSignalLab)
+			s.route(protected, "GET", "/vergex/direction-change/leaderboard", "Vergex OI Top 30 bull/bear direction leaderboard via claw402", s.handleVergexDirectionChangeLeaderboard)
+			s.route(protected, "GET", "/vergex/direction-change/current", "Vergex current bull/bear direction via claw402 (?symbol=BTC)", s.handleVergexDirectionChangeCurrent)
+			s.route(protected, "GET", "/vergex/direction-change/history", "Vergex bull/bear direction history via claw402 (?symbol=BTC&type=all&page=1&page_size=20)", s.handleVergexDirectionChangeHistory)
 			s.route(protected, "GET", "/vergex/cost-liquidation-heatmap", "Vergex cost/liquidation heatmap via claw402 (?marketType=hip3_perp&symbol=AAPL)", s.handleVergexCostLiquidationHeatmap)
 			s.route(protected, "GET", "/vergex/flow-markets", "Vergex net-flow market ranking via claw402 (?chain=mainnet&window=1h&limit=25)", s.handleVergexFlowMarkets)
 

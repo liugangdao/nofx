@@ -189,7 +189,7 @@ type StrategyEngine struct {
 	config             *store.StrategyConfig
 	nofxosClient       *nofxos.Client
 	vergexClient       *vergex.Client
-	vergexRankingCache map[string]*vergex.SignalRankItem
+	vergexRankingCache map[string]*vergex.DirectionChangeItem
 }
 
 // NewStrategyEngine creates strategy execution engine.
@@ -233,14 +233,14 @@ func NewStrategyEngine(config *store.StrategyConfig, claw402WalletKey ...string)
 			config:             config,
 			nofxosClient:       client,
 			vergexClient:       vergexClient,
-			vergexRankingCache: make(map[string]*vergex.SignalRankItem),
+			vergexRankingCache: make(map[string]*vergex.DirectionChangeItem),
 		}
 	}
 
 	return &StrategyEngine{
 		config:             config,
 		nofxosClient:       client,
-		vergexRankingCache: make(map[string]*vergex.SignalRankItem),
+		vergexRankingCache: make(map[string]*vergex.DirectionChangeItem),
 	}
 }
 
@@ -743,31 +743,13 @@ func (e *StrategyEngine) getVergexSignalCoins(limit int, marketType, chain, liqB
 	}
 	category = strings.ToLower(strings.TrimSpace(category))
 
-	ranking, err := e.vergexClient.GetSignalRanking(context.Background(), vergex.Query{
-		Chain:   chain,
-		LiqBand: liqBand,
-	})
+	leaderboard, err := e.vergexClient.GetDirectionChangeLeaderboard(context.Background())
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch Vergex signal ranking: %w", err)
+		return nil, fmt.Errorf("failed to fetch Vergex direction-change leaderboard: %w", err)
 	}
 
-	rankedItems := vergex.FilterSignalRankingItems(ranking.Items, marketType, store.MaxCandidateCoins)
-	if len(rankedItems) == 0 && strings.TrimSpace(chain) != "" {
-		fallbackRanking, fallbackErr := e.vergexClient.GetSignalRanking(context.Background(), vergex.Query{
-			LiqBand: liqBand,
-		})
-		if fallbackErr == nil {
-			fallbackItems := vergex.FilterSignalRankingItems(fallbackRanking.Items, marketType, store.MaxCandidateCoins)
-			if len(fallbackItems) > 0 {
-				logger.Infof("✅ Vergex signal ranking returned TradeFi items after retrying without chain filter (chain=%s)", chain)
-				ranking = fallbackRanking
-				rankedItems = fallbackItems
-			}
-		} else {
-			logger.Warnf("⚠️ Vergex signal ranking retry without chain failed: %v", fallbackErr)
-		}
-	}
-	e.vergexRankingCache = make(map[string]*vergex.SignalRankItem, len(rankedItems))
+	rankedItems := vergex.FilterDirectionChangeItems(leaderboard.Items, marketType, store.MaxCandidateCoins)
+	e.vergexRankingCache = make(map[string]*vergex.DirectionChangeItem, len(rankedItems))
 	for _, item := range rankedItems {
 		itemCopy := item
 		if symbol := vergex.TradableSymbolForMarket(item.MarketType, item.Symbol); symbol != "" {
@@ -803,7 +785,7 @@ func (e *StrategyEngine) getVergexSignalCoins(limit int, marketType, chain, liqB
 	// signals so the candidate universe carries BOTH long and short ideas every
 	// cycle (instead of filling up with whichever bias ranks highest). This is
 	// what lets the AI actually judge — and trade — both directions.
-	var bullItems, bearItems, otherItems []vergex.SignalRankItem
+	var bullItems, bearItems, otherItems []vergex.DirectionChangeItem
 	for _, item := range rankedItems {
 		if category != "" && category != "all" && item.Category != category {
 			continue
@@ -817,7 +799,7 @@ func (e *StrategyEngine) getVergexSignalCoins(limit int, marketType, chain, liqB
 			otherItems = append(otherItems, item)
 		}
 	}
-	items := make([]vergex.SignalRankItem, 0, limit)
+	items := make([]vergex.DirectionChangeItem, 0, limit)
 	bi, ri, oi := 0, 0, 0
 	for len(items) < limit {
 		progressed := false
@@ -1173,9 +1155,12 @@ func (e *StrategyEngine) FetchVergexDataBatch(ctx context.Context, symbols []str
 		}
 		itemMarketType := marketType
 		itemCategory := ""
-		var ranking *vergex.SignalRankItem
+		var ranking *vergex.DirectionChangeItem
 		if cached, ok := e.vergexRankingCache[symbol]; ok && cached != nil {
 			ranking = cached
+			if cached.APISymbol != "" {
+				querySymbol = cached.APISymbol
+			}
 			if cached.MarketType != "" {
 				itemMarketType = cached.MarketType
 			}
@@ -1203,14 +1188,15 @@ func (e *StrategyEngine) FetchVergexDataBatch(ctx context.Context, symbols []str
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				analysis.SignalLabError = ctx.Err().Error()
+				analysis.DirectionCurrentError = ctx.Err().Error()
+				analysis.DirectionHistoryError = ctx.Err().Error()
 				analysis.HeatmapError = ctx.Err().Error()
 				resultCh <- vergexAnalysisResult{symbol: symbol, analysis: analysis}
 				return
 			}
 			e.populateVergexDetailData(ctx, analysis, query)
-			if len(analysis.SignalLab) > 0 || len(analysis.Heatmap) > 0 ||
-				analysis.SignalLabError != "" || analysis.HeatmapError != "" || analysis.Ranking != nil {
+			if len(analysis.DirectionCurrent) > 0 || len(analysis.DirectionHistory) > 0 || len(analysis.Heatmap) > 0 ||
+				analysis.DirectionCurrentError != "" || analysis.DirectionHistoryError != "" || analysis.HeatmapError != "" || analysis.Ranking != nil {
 				resultCh <- vergexAnalysisResult{symbol: symbol, analysis: analysis}
 			}
 		}()
@@ -1242,35 +1228,52 @@ func (e *StrategyEngine) populateVergexDetailData(ctx context.Context, analysis 
 		err  error
 	}
 
-	run := func(name string, fetch func(context.Context, vergex.Query) (json.RawMessage, error), out chan<- endpointResult) {
+	run := func(name string, fetch func(context.Context) (json.RawMessage, error), out chan<- endpointResult) {
 		requestCtx, cancel := context.WithTimeout(ctx, vergexDetailRequestTimeout)
 		defer cancel()
-		body, err := fetch(requestCtx, query)
+		body, err := fetch(requestCtx)
 		out <- endpointResult{name: name, body: body, err: err}
 	}
 
-	out := make(chan endpointResult, 2)
+	out := make(chan endpointResult, 3)
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		run("signal-lab", e.fetchVergexSignalLabWithFallback, out)
+		run("direction-current", func(requestCtx context.Context) (json.RawMessage, error) {
+			return e.vergexClient.GetDirectionChangeCurrent(requestCtx, analysis.QuerySymbol)
+		}, out)
 	}()
 	go func() {
 		defer wg.Done()
-		run("heatmap", e.fetchVergexHeatmapWithFallback, out)
+		run("direction-history", func(requestCtx context.Context) (json.RawMessage, error) {
+			return e.vergexClient.GetDirectionChangeHistory(requestCtx, analysis.QuerySymbol, "all", 1, 20)
+		}, out)
+	}()
+	go func() {
+		defer wg.Done()
+		run("heatmap", func(requestCtx context.Context) (json.RawMessage, error) {
+			return e.fetchVergexHeatmapWithFallback(requestCtx, query)
+		}, out)
 	}()
 	wg.Wait()
 	close(out)
 
 	for item := range out {
 		switch item.name {
-		case "signal-lab":
+		case "direction-current":
 			if item.err != nil {
-				logger.Warnf("⚠️ Failed to fetch Vergex signal-lab for %s: %v", analysis.Symbol, item.err)
-				analysis.SignalLabError = item.err.Error()
+				logger.Warnf("⚠️ Failed to fetch Vergex current direction for %s: %v", analysis.Symbol, item.err)
+				analysis.DirectionCurrentError = item.err.Error()
 			} else {
-				analysis.SignalLab = item.body
+				analysis.DirectionCurrent = item.body
+			}
+		case "direction-history":
+			if item.err != nil {
+				logger.Warnf("⚠️ Failed to fetch Vergex direction history for %s: %v", analysis.Symbol, item.err)
+				analysis.DirectionHistoryError = item.err.Error()
+			} else {
+				analysis.DirectionHistory = item.body
 			}
 		case "heatmap":
 			if item.err != nil {
@@ -1281,24 +1284,6 @@ func (e *StrategyEngine) populateVergexDetailData(ctx context.Context, analysis 
 			}
 		}
 	}
-}
-
-func (e *StrategyEngine) fetchVergexSignalLabWithFallback(ctx context.Context, query vergex.Query) (json.RawMessage, error) {
-	var lastErr error
-	for idx, candidate := range vergexDetailQueryCandidates(query) {
-		body, err := e.vergexClient.GetSignalLab(ctx, candidate)
-		if err == nil {
-			if idx > 0 {
-				logger.Infof("✅ Vergex signal-lab succeeded with fallback marketType=%s chain=%s", candidate.MarketType, withDefaultText(candidate.Chain, "default"))
-			}
-			return body, nil
-		}
-		lastErr = err
-		if !isRetryableVergexDetailError(err) {
-			break
-		}
-	}
-	return nil, lastErr
 }
 
 func (e *StrategyEngine) fetchVergexHeatmapWithFallback(ctx context.Context, query vergex.Query) (json.RawMessage, error) {
