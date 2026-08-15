@@ -229,13 +229,13 @@ func (s *Server) createDefaultStrategies(userID string, lang string) error {
 	}
 	locales := map[string]strategyLocale{
 		"zh": {
-			defaultStrategy: strategyI18n{"NOFX Claw402 Auto Strategy", "The only built-in strategy: read the Claw402.ai board each cycle, fetch Signal Lab and cost/liquidation heatmap per candidate, then decide with raw candles."},
+			defaultStrategy: strategyI18n{"NOFX Claw402 Auto Strategy", "The only built-in strategy: read the Claw402.ai direction board each cycle, load direction history and cost/liquidation heatmaps, then manage positions by the live board."},
 		},
 		"en": {
-			defaultStrategy: strategyI18n{"NOFX Claw402 Auto Strategy", "The only built-in strategy: read the Claw402.ai board each cycle, fetch Signal Lab and cost/liquidation heatmap per candidate, then decide with raw candles."},
+			defaultStrategy: strategyI18n{"NOFX Claw402 Auto Strategy", "The only built-in strategy: read the Claw402.ai direction board each cycle, load direction history and cost/liquidation heatmaps, then manage positions by the live board."},
 		},
 		"id": {
-			defaultStrategy: strategyI18n{"Strategi Otomatis NOFX Claw402", "Satu strategi bawaan: membaca papan Claw402.ai, mengambil Signal Lab dan heatmap biaya/likuidasi per kandidat, lalu memutuskan dengan candle mentah."},
+			defaultStrategy: strategyI18n{"Strategi Otomatis NOFX Claw402", "Satu strategi bawaan: membaca papan arah Claw402.ai setiap siklus, memuat riwayat arah dan heatmap biaya/likuidasi, lalu mengelola posisi mengikuti papan langsung."},
 		},
 	}
 	locale, ok := locales[lang]

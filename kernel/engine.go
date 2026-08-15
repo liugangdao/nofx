@@ -743,6 +743,10 @@ func (e *StrategyEngine) getVergexSignalCoins(limit int, marketType, chain, liqB
 	}
 	category = strings.ToLower(strings.TrimSpace(category))
 
+	// Never carry a stale signal snapshot into a new cycle when the board call
+	// fails. Callers can then distinguish "no valid snapshot" from a symbol that
+	// genuinely disappeared from a successfully fetched board.
+	e.vergexRankingCache = make(map[string]*vergex.DirectionChangeItem)
 	leaderboard, err := e.vergexClient.GetDirectionChangeLeaderboard(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch Vergex direction-change leaderboard: %w", err)
@@ -830,9 +834,9 @@ func (e *StrategyEngine) getVergexSignalCoins(limit int, marketType, chain, liqB
 	}
 	if len(items) == 0 {
 		if category != "" && category != "all" {
-			return nil, fmt.Errorf("vergex signal ranking returned no tradable %s items in category %s", marketType, category)
+			return nil, fmt.Errorf("vergex direction board returned no tradable %s items in category %s", marketType, category)
 		}
-		return nil, fmt.Errorf("vergex signal ranking returned no tradable %s items", marketType)
+		return nil, fmt.Errorf("vergex direction board returned no tradable %s items", marketType)
 	}
 
 	candidates := make([]CandidateCoin, 0, len(items))
@@ -867,7 +871,7 @@ type DirectionalCandidate struct {
 }
 
 // DirectionalCandidates returns bullish (long) and bearish (short) candidates
-// from the most recent Vergex signal ranking, each ordered by upstream rank
+// from the most recent Vergex direction board, each ordered by upstream rank
 // (strongest first) and carrying the signal score so callers can require a
 // minimum strength. Only populated for vergex_signal coin sources, since that
 // is the only source carrying a per-symbol directional bias.
@@ -907,6 +911,38 @@ func (e *StrategyEngine) DirectionalCandidates() (bullish []DirectionalCandidate
 		bearish = append(bearish, r.cand)
 	}
 	return bullish, bearish
+}
+
+// HasVergexSignalSnapshot reports whether the current cycle fetched a usable
+// direction board. An empty cache means the policy must not trade on absence.
+func (e *StrategyEngine) HasVergexSignalSnapshot() bool {
+	return e != nil && len(e.vergexRankingCache) > 0
+}
+
+// VergexSignalBias returns the canonical current board direction for a symbol.
+// QuerySymbol makes BTC/BTCUSDT and xyz:NVDA/NVDA resolve to the same market.
+func (e *StrategyEngine) VergexSignalBias(symbol string) (string, bool) {
+	if e == nil || len(e.vergexRankingCache) == 0 {
+		return "", false
+	}
+	target := vergex.QuerySymbol(symbol)
+	if target == "" {
+		return "", false
+	}
+	for cachedSymbol, item := range e.vergexRankingCache {
+		if item == nil || vergex.QuerySymbol(cachedSymbol) != target {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(item.Bias)) {
+		case "bullish", "long", "buy":
+			return "bullish", true
+		case "bearish", "short", "sell":
+			return "bearish", true
+		default:
+			return "neutral", true
+		}
+	}
+	return "", false
 }
 
 func withDefaultText(value, fallback string) string {
@@ -1333,7 +1369,7 @@ func vergexDetailMarketTypeCandidates(query vergex.Query) []string {
 
 func isVergexAllMarketType(marketType string) bool {
 	switch strings.ToLower(strings.TrimSpace(marketType)) {
-	case "", "all", "any", "ranking", "signal-ranking", "signal_ranking", "claw402", "vergex":
+	case "", "all", "any", "ranking", "claw402", "vergex":
 		return true
 	default:
 		return false

@@ -40,3 +40,31 @@ func TestDirectionalCandidatesEmpty(t *testing.T) {
 		t.Fatalf("empty cache should yield no candidates, got %v %v", bull, bear)
 	}
 }
+
+func TestVergexSignalBiasNormalizesTradingSymbols(t *testing.T) {
+	e := &StrategyEngine{
+		vergexRankingCache: map[string]*vergex.DirectionChangeItem{
+			"xyz:NVDA": {Symbol: "NVDA", Bias: "bullish"},
+			"BTC":      {Symbol: "BTC", Bias: "sell"},
+			"ETH":      {Symbol: "ETH", Bias: "neutral"},
+		},
+	}
+
+	for _, tc := range []struct {
+		symbol string
+		want   string
+	}{
+		{"NVDA", "bullish"},
+		{"xyz:NVDA", "bullish"},
+		{"BTCUSDT", "bearish"},
+		{"ETH", "neutral"},
+	} {
+		got, ok := e.VergexSignalBias(tc.symbol)
+		if !ok || got != tc.want {
+			t.Fatalf("VergexSignalBias(%q) = %q, %v; want %q, true", tc.symbol, got, ok, tc.want)
+		}
+	}
+	if _, ok := e.VergexSignalBias("SOL"); ok {
+		t.Fatal("symbol absent from the current board must not report a bias")
+	}
+}

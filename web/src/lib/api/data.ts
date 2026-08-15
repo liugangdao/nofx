@@ -123,7 +123,12 @@ export interface VergexDirectionCurrentResponse {
   reason?: Record<string, string>
   factor_as_of?: number
   latest_reversal?: VergexDirectionHistoryItem | null
-  readiness?: { generation?: number; cutoff_at?: number; watermark_at?: number; symbol_count?: number }
+  readiness?: {
+    generation?: number
+    cutoff_at?: number
+    watermark_at?: number
+    symbol_count?: number
+  }
 }
 
 export interface VergexDirectionHistoryItem {
@@ -144,7 +149,12 @@ export interface VergexDirectionHistoryItem {
 
 export interface VergexDirectionHistoryResponse {
   items: VergexDirectionHistoryItem[]
-  pagination?: { current_page: number; page_size: number; total_pages: number; total_items: number }
+  pagination?: {
+    current_page: number
+    page_size: number
+    total_pages: number
+    total_items: number
+  }
 }
 
 export interface VergexDetailRequest {
@@ -152,72 +162,6 @@ export interface VergexDetailRequest {
   symbol: string
   chain?: string
   liqBand?: string
-}
-
-export interface VergexSignalDimension {
-  key?: string
-  family?: string
-  label?: string
-  what?: string
-  kind?: string
-  direction?: string
-  strength?: string
-  percentile?: number
-  detail?: string
-}
-
-export interface VergexSignalLevels {
-  markPrice?: number
-  poc?: number
-  pocDistPct?: number
-  magnet?: number
-  magnetDistPct?: number
-  resistance?: number
-  resistanceDistPct?: number
-  support?: number
-  supportDistPct?: number
-  valueAreaHigh?: number
-  valueAreaLow?: number
-}
-
-export interface VergexSignalMetrics {
-  shortLiqAbove?: number
-  longLiqBelow?: number
-  longOverhangPnl?: number
-  shortOverhangPnl?: number
-  gLong?: number
-  gShort?: number
-  cascadeVulnPct?: number
-  top10Pct?: number
-  convexity?: number
-  includedPositions?: number
-  state?: string
-}
-
-export interface VergexSignalLabData {
-  market?: {
-    chain?: string
-    marketType?: string
-    marketId?: string
-    symbol?: string
-    displayName?: string
-    isActive?: boolean
-  }
-  band?: string
-  bias?: string
-  structureRead?: string
-  confidence?: string
-  dimensions?: VergexSignalDimension[]
-  levels?: VergexSignalLevels
-  metrics?: VergexSignalMetrics
-  compositeZ?: number
-  rank?: number
-  universeSize?: number
-}
-
-export interface VergexSignalLabResponse {
-  data?: VergexSignalLabData
-  meta?: unknown
 }
 
 export interface VergexHeatmapBin {
@@ -319,7 +263,12 @@ export const dataApi = {
     page = 1,
     pageSize = 20
   ): Promise<VergexDirectionHistoryResponse> {
-    const query = new URLSearchParams({ symbol, type, page: String(page), page_size: String(pageSize) })
+    const query = new URLSearchParams({
+      symbol,
+      type,
+      page: String(page),
+      page_size: String(pageSize),
+    })
     const result = await httpClient.request<VergexDirectionHistoryResponse>(
       `${API_BASE}/vergex/direction-change/history?${query}`,
       { timeout: 90000 }
@@ -468,12 +417,19 @@ export const dataApi = {
       `${API_BASE}/vergex/direction-change/leaderboard`,
       { silent }
     )
-    if (!result.success) throw new Error('Failed to fetch direction leaderboard')
-    return { items: (result.data?.items || []).slice(0, limit).map((item) => ({
-      rank: item.rank, symbol: item.symbol, market_type: item.market?.marketType || '',
-      bias: item.bias, score: item.directionScore,
-      category: item.market?.marketType === 'core_perp' ? 'crypto' : undefined,
-    })) }
+    if (!result.success)
+      throw new Error('Failed to fetch direction leaderboard')
+    return {
+      items: (result.data?.items || []).slice(0, limit).map((item) => ({
+        rank: item.rank,
+        symbol: item.symbol,
+        market_type: item.market?.marketType || '',
+        bias: item.bias,
+        score: item.directionScore,
+        category:
+          item.market?.marketType === 'core_perp' ? 'crypto' : undefined,
+      })),
+    }
   },
 
   async getEquityHistory(traderId?: string, silent?: boolean): Promise<any[]> {

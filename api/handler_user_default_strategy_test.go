@@ -52,7 +52,7 @@ func TestCreateDefaultStrategiesUsesOneReadyToRunClaw402Preset(t *testing.T) {
 		t.Fatalf("default ParseConfig failed: %v", err)
 	}
 	if trendCfg.CoinSource.SourceType != "vergex_signal" || trendCfg.CoinSource.VergexLimit != 10 || trendCfg.CoinSource.VergexMarketType != "all" {
-		t.Fatalf("default strategy should use the Claw402/Vergex all-market signal ranking, got %+v", trendCfg.CoinSource)
+		t.Fatalf("default strategy should use the Claw402/Vergex all-market direction board, got %+v", trendCfg.CoinSource)
 	}
 	if trendCfg.CoinSource.UseAI500 || trendCfg.RiskControl.MaxPositions != 2 {
 		t.Fatalf("default strategy should be Claw402/Vergex native with a 2-position concentrated book, got coin=%+v risk=%+v", trendCfg.CoinSource, trendCfg.RiskControl)

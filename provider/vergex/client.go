@@ -434,44 +434,6 @@ func FormatAnalysisForAI(analysis *MarketAnalysis) string {
 	return sb.String()
 }
 
-func FormatSignalLabMarkdown(raw json.RawMessage) string {
-	data, ok := decodeVergexDataObject(raw)
-	if !ok {
-		return fallbackJSONBlock(raw, 2200)
-	}
-
-	var sb strings.Builder
-	writeScalarSummary(&sb, data, []string{"symbol", "marketType", "band", "bias", "confidence", "compositeZ", "score"})
-
-	dimensions := objectArray(data, "dimensions")
-	if len(dimensions) == 0 {
-		return withFallbackIfEmpty(sb.String(), raw)
-	}
-
-	sb.WriteString("| Family | Signal | Direction | Strength | Percentile | Detail |\n")
-	sb.WriteString("| --- | --- | --- | --- | ---: | --- |\n")
-	limit := minInt(len(dimensions), 8)
-	for _, row := range dimensions[:limit] {
-		sb.WriteString("| ")
-		sb.WriteString(markdownCell(firstString(row, "family")))
-		sb.WriteString(" | ")
-		sb.WriteString(markdownCell(firstString(row, "label", "key")))
-		sb.WriteString(" | ")
-		sb.WriteString(markdownCell(firstString(row, "direction")))
-		sb.WriteString(" | ")
-		sb.WriteString(markdownCell(firstString(row, "strength")))
-		sb.WriteString(" | ")
-		sb.WriteString(markdownCell(formatOptionalFloat(row, "percentile")))
-		sb.WriteString(" | ")
-		sb.WriteString(markdownCell(truncateText(firstString(row, "detail", "what"), 220)))
-		sb.WriteString(" |\n")
-	}
-	if len(dimensions) > limit {
-		sb.WriteString(fmt.Sprintf("- Additional dimensions omitted: %d\n", len(dimensions)-limit))
-	}
-	return withFallbackIfEmpty(sb.String(), raw)
-}
-
 func FormatHeatmapMarkdown(raw json.RawMessage) string {
 	data, ok := decodeVergexDataObject(raw)
 	if !ok {
