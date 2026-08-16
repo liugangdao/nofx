@@ -234,13 +234,13 @@ function defaultRisk(risk?: Partial<RiskControlConfig>): RiskControlConfig {
   const leverage =
     risk?.altcoin_max_leverage || risk?.btc_eth_max_leverage || 10
   return {
-    max_positions: risk?.max_positions || 2,
+    max_positions: risk?.max_positions || 4,
     btc_eth_max_leverage: leverage,
     altcoin_max_leverage: leverage,
     btc_eth_max_position_value_ratio:
-      risk?.btc_eth_max_position_value_ratio || 10,
+      risk?.btc_eth_max_position_value_ratio || 2.4,
     altcoin_max_position_value_ratio:
-      risk?.altcoin_max_position_value_ratio || 10,
+      risk?.altcoin_max_position_value_ratio || 2.4,
     max_margin_usage: risk?.max_margin_usage || 1.0,
     min_position_size: risk?.min_position_size || 12,
     min_risk_reward_ratio: risk?.min_risk_reward_ratio || 3,
@@ -1074,11 +1074,11 @@ export function StrategyStudioPage() {
         }),
         risk_control: defaultRisk({
           ...defaultConfig.ai_config?.risk_control,
-          max_positions: 2,
+          max_positions: 4,
           btc_eth_max_leverage: 10,
           altcoin_max_leverage: 10,
-          btc_eth_max_position_value_ratio: 10,
-          altcoin_max_position_value_ratio: 10,
+          btc_eth_max_position_value_ratio: 2.4,
+          altcoin_max_position_value_ratio: 2.4,
           max_margin_usage: 1.0,
           min_confidence: 78,
           min_risk_reward_ratio: 3,
@@ -1186,13 +1186,12 @@ export function StrategyStudioPage() {
       }),
       risk_control: defaultRisk({
         ...base.ai_config?.risk_control,
-        max_positions: 2,
+        max_positions: 4,
         btc_eth_max_leverage: 10,
         altcoin_max_leverage: 10,
-        // Few, concentrated positions held for big moves. 10x leverage keeps a
-        // wide (-5%) stop survivable; 2 positions × 5x = 10x total.
-        btc_eth_max_position_value_ratio: 5,
-        altcoin_max_position_value_ratio: 5,
+        // Four allocations total ~9.6x notional with room for execution overhead.
+        btc_eth_max_position_value_ratio: 2.4,
+        altcoin_max_position_value_ratio: 2.4,
         max_margin_usage: 1.0,
         min_confidence: 78,
         min_risk_reward_ratio: 3,
